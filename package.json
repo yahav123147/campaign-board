@@ -7,9 +7,9 @@
     "npm": ">=9.0.0"
   },
   "scripts": {
-    "dev": "next dev -H 127.0.0.1",
-    "build": "next build --webpack",
-    "start": "next start -H 127.0.0.1",
+    "dev": "NEXT_TELEMETRY_DISABLED=1 next dev -H 127.0.0.1",
+    "build": "NEXT_TELEMETRY_DISABLED=1 next build --webpack",
+    "start": "NEXT_TELEMETRY_DISABLED=1 next start -H 127.0.0.1",
     "lint": "eslint",
     "doctor": "node scripts/doctor.mjs",
     "package:client": "node scripts/package-client.mjs",
@@ -34,11 +34,11 @@
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
-    "@vitest/ui": "^4.1.5",
+    "@vitest/ui": "^4.1.11",
     "eslint": "^9",
     "eslint-config-next": "16.3.3",
     "jsdom": "^29.1.1",
     "tailwindcss": "^4",
-    "vitest": "^4.1.5"
+    "vitest": "^4.1.11"
   }
 }
