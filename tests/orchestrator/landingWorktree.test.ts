@@ -4,11 +4,16 @@ import path from "node:path";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { promisify } from "node:util";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   commitLandingDelivery,
   prepareLandingWorktree,
 } from "@/orchestrator/landingWorktree";
+
+// Every test here drives real git: worktrees, commits, filters. Alone they take
+// up to 4s, which the 5s default left no room for once the full suite loaded
+// the machine; on a fresh clone they timed out on every run.
+vi.setConfig({ testTimeout: 30_000 });
 
 const execFileAsync = promisify(execFile);
 const temporaryDirectories: string[] = [];

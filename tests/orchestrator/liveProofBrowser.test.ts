@@ -219,7 +219,11 @@ describe("startSupervisedChrome", () => {
   it("reaps its own supervisor when startup never becomes ready before the deadline", async () => {
     process.env.FAKE_CHROME_MODE = "never-ready";
 
-    const start = startSupervisedChrome({ profileDir, deadline: Date.now() + 700 });
+    // The fake browser must be up and have published its PIDs before the
+    // deadline kills it, or there is no tree to prove dead. 700ms raced node's
+    // own startup on a loaded machine; "never-ready" still never becomes
+    // ready, so a longer deadline tests the same reaping.
+    const start = startSupervisedChrome({ profileDir, deadline: Date.now() + 3_000 });
     const fixture = await waitForFixture();
 
     await expect(start).rejects.toThrow(/לא עלה בזמן/);
