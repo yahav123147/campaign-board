@@ -1,0 +1,5 @@
+# Historical planning files contain installation-specific context and are not
+# part of the client product. `git archive` honors export-ignore.
+/docs export-ignore
+/AGENTS.md export-ignore
+/CLAUDE.md export-ignore

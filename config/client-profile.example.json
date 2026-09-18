@@ -1,0 +1,71 @@
+{
+  "schemaVersion": 1,
+  "tenant": {
+    "id": "example-client",
+    "displayName": "Example Client",
+    "locale": "en-US",
+    "timezone": "UTC"
+  },
+  "brand": {
+    "publicName": "Example Brand",
+    "legalName": null,
+    "facts": [
+      "Replace this sentence with a verified fact about the client and its offer."
+    ]
+  },
+  "policies": {
+    "contentRules": [
+      "Use only verified client facts and approved claims."
+    ],
+    "advertisingRules": [
+      "Do not publish or modify advertising objects; require human review for every plan."
+    ],
+    "operationalRules": [
+      "Do not make external writes without explicit human approval.",
+      "Keep optional capabilities disabled until the local readiness doctor reports no blocking failures."
+    ],
+    "capabilities": {
+      "landingPageBuild": false,
+      "metaPixelRead": false,
+      "metaCampaignCreatePaused": false,
+      "creativeImageGen": false
+    }
+  },
+  "copy": {
+    "standardPath": null,
+    "adsStandardPath": null,
+    "pageTypesDir": null
+  },
+  "landing": {
+    "workspacePath": null,
+    "publicBaseUrl": null,
+    "referenceUrlPrefixes": [],
+    "referenceRoots": [],
+    "designStandardPath": null,
+    "qaScriptPath": null,
+    "mockupBasesDir": null
+  },
+  "meta": {
+    "accountId": null,
+    "pixelId": null,
+    "customConversionId": null,
+    "pageId": null,
+    "instagramActorId": null,
+    "domain": null,
+    "tokenKeychainService": null
+  },
+  "gates": {
+    "policy": "full"
+  },
+  "discussion": {
+    "rounds": 2
+  },
+  "ui": {
+    "boardName": null
+  },
+  "creative": {
+    "openaiKeychainService": null,
+    "presenterPhotosDir": null,
+    "standardPath": null
+  }
+}

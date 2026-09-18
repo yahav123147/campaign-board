@@ -1,0 +1,16 @@
+# The deterministic cutout and verification tools use only Pillow.
+# Semantic background removal is intentionally optional and is not downloaded
+# during a campaign run.
+Pillow==12.1.1
+# Hebrew text ordering for the ad composer overlay.
+python-bidi==0.6.6
+# CA bundle for TLS verification: some Python builds (notably python.org's
+# macOS installer) ship no system trust store, so urllib's default SSL
+# context has no cafile and every HTTPS fetch fails verification. certifi
+# gives harvest_brand.py a bundle to point at; verification stays on either way.
+certifi==2026.7.22
+# Screen detection and compositing for the device mockups: the label map that
+# says where a base frame's screens are (scipy) and the pixel arithmetic that
+# pastes into them (numpy).
+numpy==2.2.6
+scipy==1.15.3
