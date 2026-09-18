@@ -43,10 +43,6 @@ describe("liveProofEnabled", () => {
   });
 });
 
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 /**
  * Throwaway profiles land in a directory this file owns, not in the shared
  * system temp dir, so a parallel test file can never be seen mid-capture.
@@ -145,7 +141,10 @@ describe("captureInstagramProof", () => {
       settled = true;
       return value;
     });
-    await delay(50);
+    // Wait for the state under test, not for a clock: the capture is parked on
+    // the browser close. A fixed 50ms assumed launch had happened by then,
+    // and on a loaded machine it had not, so the profile was not there yet.
+    await vi.waitFor(() => expect(closeAndWait).toHaveBeenCalled());
 
     expect(settled).toBe(false);
     const profileDir = seenAtLaunch.profileDir!;
