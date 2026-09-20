@@ -71,9 +71,20 @@ export async function readCreativeStandard(profile?: ClientProfile): Promise<str
  * Injecting the whole file there would bury them in a methodology the
  * synthesizer is not writing against (F109).
  */
+/**
+ * Headings that open the embedded skill. The shipped default titles it
+ * "המתודולוגיה"; older tenant files used "הסקיל". A standard with neither is
+ * taken whole, which is the right answer for a file that has no skill in it,
+ * and was the wrong answer for the default, which sent the entire skill, its
+ * JSON output contract included, to a synthesizer writing a strategy document.
+ */
+const EMBEDDED_SKILL_HEADINGS = ["\n# הסקיל:", "\n# המתודולוגיה"] as const;
+
 export function copyStandardBase(standard: string): string {
-  const marker = standard.indexOf("\n# הסקיל:");
-  const base = marker === -1 ? standard : standard.slice(0, marker);
+  const cuts = EMBEDDED_SKILL_HEADINGS
+    .map((heading) => standard.indexOf(heading))
+    .filter((index) => index !== -1);
+  const base = cuts.length === 0 ? standard : standard.slice(0, Math.min(...cuts));
   return base.trim();
 }
 

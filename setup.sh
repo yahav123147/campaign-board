@@ -10,6 +10,16 @@ fi
 
 command -v node >/dev/null || { echo "חסר Node.js 20.9+. התקינו מ-nodejs.org ואז הריצו שוב."; exit 1; }
 command -v python3 >/dev/null || { echo "חסר Python 3.10+."; exit 1; }
+# A stock Mac ships python3 3.9.6, and the pinned numpy needs 3.10+: without
+# this gate the install got past every check and died inside pip.
+PY_VERSION="$(python3 --version 2>&1 | awk '{print $2}')"
+PY_MAJOR="${PY_VERSION%%.*}"
+PY_MINOR="$(printf '%s' "$PY_VERSION" | cut -d. -f2)"
+if [[ -z "$PY_MAJOR" || -z "$PY_MINOR" ]] || (( PY_MAJOR < 3 || (PY_MAJOR == 3 && PY_MINOR < 10) )); then
+  echo "נדרש Python 3.10 ומעלה, ונמצא Python ${PY_VERSION:-לא ידוע} (python3 ב-PATH)."
+  echo "התקינו מ-python.org או דרך brew install python@3.12, פתחו טרמינל חדש והריצו שוב."
+  exit 1
+fi
 command -v claude >/dev/null || { echo "חסר Claude Code CLI. התקינו והריצו: claude auth login (מנוי MAX)."; exit 1; }
 
 echo "-- מתקין תלויות Node..."

@@ -72,6 +72,16 @@ describe("renderClientContext", () => {
     expect(context).toContain("REFERENCE_URL: none");
   });
 
+  it("states the output language in words, resolved from tenant.locale", () => {
+    // Six stage instructions say "write in the profile's output language", but
+    // nothing rendered what that language is: the model was left to read a BCP
+    // 47 tag out of a JSON blob, and one client's strategy document came out in
+    // Italian. The language is now a sentence, not an inference.
+    expect(renderClientContext(PROFILE)).toContain("Write every output in English");
+    expect(renderClientContext({ ...PROFILE, tenant: { ...PROFILE.tenant, locale: "he-IL" } }))
+      .toContain("Write every output in Hebrew");
+  });
+
   it("fails closed when no profile was supplied", () => {
     const context = renderClientContext();
 

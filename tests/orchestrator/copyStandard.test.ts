@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { readCopyStandard, renderCopyStandard } from "@/orchestrator/copyStandard";
+import { copyStandardBase, readCopyStandard, renderCopyStandard } from "@/orchestrator/copyStandard";
 import { validateClientProfile } from "@/config/clientProfile";
 import type { ClientProfile } from "@/config/clientProfile";
 
@@ -79,5 +79,28 @@ describe("the stage 4 copy standard", () => {
 
   it("rejects a relative standard path in the profile", () => {
     expect(() => profileWithStandard("./copy-standard.md")).toThrow(/absolute path/);
+  });
+});
+
+describe("copyStandardBase, what the strategy synthesis receives", () => {
+  it("keeps the board's rules and drops the embedded skill, on the shipped default", async () => {
+    // A client's synthesizer was handed the whole embedded copy skill, with its
+    // "output structured JSON for the design agent" instructions, and rightly
+    // refused to write a strategy document against it. The cut marker did not
+    // match the heading the default file actually uses.
+    const shipped = await fs.readFile(
+      path.join(process.cwd(), "config", "standards", "copy-standard.default.md"),
+      "utf8",
+    );
+    const base = copyStandardBase(shipped);
+
+    expect(base).toContain("ההבטחה הגדולה: הנוסחה");
+    expect(base).not.toContain("Elite Sales Page Architect");
+    expect(base).not.toContain("Output structured JSON");
+    expect(base).not.toContain("המתודולוגיה (מוטמעת במלואה)");
+  });
+
+  it("still honours the older skill marker", () => {
+    expect(copyStandardBase("# תקן\nכלל\n\n# הסקיל: x\nskill body")).toBe("# תקן\nכלל");
   });
 });

@@ -1,3 +1,4 @@
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   assessClaudeAuth,
@@ -5,6 +6,7 @@ import {
   claudeApiEnvironmentCheck,
   doctorCheck,
   formatDoctorReport,
+  importCanonicalClientProfile,
   macOnlyCapabilityStatus,
   metaGraphApiVersionCheck,
   missingRequiredImageModules,
@@ -13,6 +15,7 @@ import {
   parseRelevantDotEnv,
   parseVersion,
   processTreePlatformCheck,
+  pythonImportName,
   REQUIRED_IMAGE_MODULES,
   resolveDoctorDataPaths,
   resolveDoctorPython,
@@ -91,6 +94,22 @@ describe("doctor pure checks", () => {
     expect(missingRequiredImageModules(
       parsePythonRequirements("Pillow==12.1.1\nnumpy==2.2.6\nscipy==1.15.3\n"),
     )).toEqual([]);
+  });
+
+  it("knows the import name of every pinned image package", () => {
+    // python-bidi installs as `bidi`. The dash-to-underscore guess produced
+    // `python_bidi`, which never imports, so a correct install read as broken.
+    expect(pythonImportName("python-bidi")).toBe("bidi");
+    expect(pythonImportName("Pillow")).toBe("PIL");
+    expect(pythonImportName("numpy")).toBe("numpy");
+  });
+
+  it("loads the canonical profile validator with its @/ imports resolved", async () => {
+    // The validator imports a value from "@/types". A data: URL module cannot
+    // resolve a bare alias, so the doctor reported "could not be loaded" on
+    // every install, correct ones included.
+    const validator = await importCanonicalClientProfile(path.resolve(import.meta.dirname, "..", ".."));
+    expect(typeof validator.validateClientProfile).toBe("function");
   });
 
   it("requires owner-only Unix permissions and matching ownership", () => {

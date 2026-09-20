@@ -581,6 +581,18 @@ export function missingRequiredImageModules(requirements) {
   return REQUIRED_IMAGE_MODULES.filter((name) => !declared.has(name.toLowerCase()));
 }
 
+/**
+ * Packages whose import name is not the distribution name with dashes turned
+ * to underscores. python-bidi installs as `bidi`; the guess `python_bidi` never
+ * imported, so a correct install read as broken on every machine.
+ */
+const PYTHON_IMPORT_NAMES = Object.freeze({ Pillow: "PIL", "python-bidi": "bidi" });
+
+/** @param {string} packageName */
+export function pythonImportName(packageName) {
+  return PYTHON_IMPORT_NAMES[packageName] ?? packageName.replace(/-/g, "_");
+}
+
 async function pythonChecks(root) {
   const interpreter = resolveDoctorPython();
   const shown = interpreter === "python3" ? "python3 on PATH" : interpreter;
@@ -662,7 +674,8 @@ async function pythonChecks(root) {
     "result = {}",
     "for name in sys.argv[1:]:",
     "    try:",
-    "        module_name = {'Pillow': 'PIL'}.get(name, name.replace('-', '_'))",
+    // A JSON object is a valid Python dict literal for string keys and values.
+    `        module_name = ${JSON.stringify(PYTHON_IMPORT_NAMES)}.get(name, name.replace('-', '_'))`,
     "        importlib.import_module(module_name)",
     "        result[name] = {'version': metadata.version(name), 'importable': True}",
     "    except Exception:",
@@ -1109,21 +1122,59 @@ async function portChecks(effectiveEnv) {
   return checks;
 }
 
-async function importCanonicalClientProfile(root) {
-  const [typescriptImport, source] = await Promise.all([
-    import("typescript"),
-    fs.readFile(path.join(root, "config", "clientProfile.ts"), "utf8"),
-  ]);
+/**
+ * Load config/clientProfile.ts as an ES module without a build step.
+ *
+ * Each file is transpiled and imported as a data: URL. A data: URL module has
+ * no directory, so the repository's "@/..." alias cannot resolve from inside
+ * it: every remaining "@/x" specifier (type-only imports are already erased)
+ * is compiled the same way and its data: URL spliced in before import. Until
+ * the validator gained a value import from "@/types" this never came up, and
+ * the doctor then reported "could not be loaded" on every correct install.
+ *
+ * @param {string} root
+ */
+export async function importCanonicalClientProfile(root) {
+  const typescriptImport = await import("typescript");
   const typescript = typescriptImport.default ?? typescriptImport;
-  const compiled = typescript.transpileModule(source, {
-    compilerOptions: {
-      target: typescript.ScriptTarget.ES2022,
-      module: typescript.ModuleKind.ES2022,
-      sourceMap: false,
-    },
-  }).outputText;
-  const moduleUrl = `data:text/javascript;base64,${Buffer.from(compiled).toString("base64")}`;
-  return import(moduleUrl);
+  /** @type {Map<string, Promise<string>>} */
+  const urls = new Map();
+
+  /** @param {string} specifier a path relative to root, without extension */
+  async function sourceFileFor(specifier) {
+    for (const candidate of [`${specifier}.ts`, path.join(specifier, "index.ts")]) {
+      const file = path.join(root, candidate);
+      if (await fs.access(file).then(() => true, () => false)) return file;
+    }
+    throw new Error(`Cannot resolve "@/${specifier}" from ${root}`);
+  }
+
+  /** @param {string} specifier */
+  function moduleUrlFor(specifier) {
+    let pending = urls.get(specifier);
+    if (!pending) {
+      pending = (async () => {
+        const source = await fs.readFile(await sourceFileFor(specifier), "utf8");
+        let output = typescript.transpileModule(source, {
+          compilerOptions: {
+            target: typescript.ScriptTarget.ES2022,
+            module: typescript.ModuleKind.ES2022,
+            sourceMap: false,
+          },
+        }).outputText;
+        const aliased = new Set([...output.matchAll(/from\s+["']@\/([^"']+)["']/g)].map((m) => m[1]));
+        for (const inner of aliased) {
+          const url = JSON.stringify(await moduleUrlFor(inner));
+          output = output.replaceAll(`"@/${inner}"`, url).replaceAll(`'@/${inner}'`, url);
+        }
+        return `data:text/javascript;base64,${Buffer.from(output).toString("base64")}`;
+      })();
+      urls.set(specifier, pending);
+    }
+    return pending;
+  }
+
+  return import(await moduleUrlFor(path.join("config", "clientProfile")));
 }
 
 /** @param {string} root @param {Record<string, string>} effectiveEnv */
