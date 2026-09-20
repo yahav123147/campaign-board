@@ -3,7 +3,7 @@
   "tenant": {
     "id": "example-client",
     "displayName": "Example Client",
-    "locale": "en-US",
+    "locale": "he-IL",
     "timezone": "UTC"
   },
   "brand": {

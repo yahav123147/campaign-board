@@ -96,7 +96,7 @@ python3 -m pip install -r requirements-image-core.txt
 ## פרופיל לקוח וסביבה
 
 1. העתיקו את `config/client-profile.example.json` לקובץ פרטי מחוץ ל-repository והגבילו אותו להרשאות של המשתמש הנוכחי בלבד.
-2. מלאו רק עובדות מאומתות והרשאות שהלקוח אישר במפורש.
+2. מלאו רק עובדות מאומתות והרשאות שהלקוח אישר במפורש. `tenant.locale` קובע את שפת כל התוצרים: `he-IL` לעברית. השאירו `en-US` ותקבלו מסמכים באנגלית.
 3. העתיקו את `.env.example` ל-`.env.local` והגדירו ב-`CAMPAIGN_COUNCIL_CLIENT_PROFILE` נתיב מוחלט. אין להשתמש ב-`~` או ב-`$HOME`, כי ערכי dotenv אינם מורחבים על ידי shell.
 4. כברירת מחדל הריצות נשמרות בתיקיית application data פרטית של מערכת ההפעלה. אפשר להגדיר בסיס חלופי עם `CAMPAIGN_COUNCIL_DATA_DIR`.
 5. אם שלב 5 פעיל, הגדירו `LANDING_PAGES_DIR` לאותו נתיב שמופיע ב-`landing.workspacePath` בפרופיל.
