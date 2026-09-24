@@ -1,0 +1,180 @@
+name: Client installation checks
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: client-checks-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  client:
+    name: ${{ matrix.os }} portable checks and platform guards
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, ubuntu-24.04]
+    defaults:
+      run:
+        shell: bash
+    env:
+      CI: "true"
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      # Release commits reviewed against the official actions repositories.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          package-manager-cache: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install Node and Python dependencies
+        run: |
+          npm ci
+          python3 -m venv "$RUNNER_TEMP/council-python"
+          "$RUNNER_TEMP/council-python/bin/python3" -m pip install -r requirements-image-core.txt
+          echo "$RUNNER_TEMP/council-python/bin" >> "$GITHUB_PATH"
+      - name: Install Chromium and Linux prerequisites
+        run: |
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            sudo apt-get update -qq
+            sudo apt-get install -y bubblewrap socat procps
+            npx playwright install --with-deps chromium
+          else
+            npx playwright install chromium
+          fi
+      - name: Unit, local browser, process cleanup and setup checks
+        run: |
+          npx vitest run --maxWorkers=2
+          python3 -m unittest discover -s tests/scripts -p 'test_*.py'
+      # This is a runner setting, not a product one: the shipped target is WSL2,
+      # whose kernel carries no such restriction. The doctor's probe reports
+      # the same failure with an action on a plain Ubuntu 24.04 desktop.
+      - name: Allow unprivileged user namespaces their capabilities (Ubuntu 24.04 AppArmor default blocks bwrap loopback)
+        if: runner.os == 'Linux'
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          sysctl kernel.apparmor_restrict_unprivileged_userns
+      # Logs live outside the checkout so the packaging step still sees a clean tree.
+      - name: Live Linux sandbox tests (a skip fails the job)
+        if: runner.os == 'Linux'
+        env:
+          COUNCIL_TEST_LINUX_SANDBOX: "1"
+        run: |
+          python3 -m unittest -v tests/scripts/test_linux_process_sandbox.py 2>&1 | tee "$RUNNER_TEMP/sandbox-tests.log"
+          node scripts/ci-assert-sandbox-tests-ran.mjs < "$RUNNER_TEMP/sandbox-tests.log"
+      - name: Doctor proves the sandbox by running it
+        if: runner.os == 'Linux'
+        # The doctor legitimately reports other failures on a bare runner (no Claude CLI, no client profile); only the sandbox line is under test here.
+        run: |
+          npm run doctor 2>&1 | tee "$RUNNER_TEMP/doctor.log" || true
+          grep -q "\[PASS\] Stage 5 sandbox (bubblewrap)" "$RUNNER_TEMP/doctor.log"
+      - name: Type check and production build
+        run: |
+          npx tsc --noEmit
+          npm run build
+      - name: Package privacy and extracted client smoke
+        run: node scripts/ci-package-smoke.mjs
+
+  wsl2:
+    name: WSL2 (Ubuntu) live sandbox
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: Vampire/setup-wsl@d1da7f2c0322a5ee4f24975344f67fc0f5baf364 # v7.0.0
+        with:
+          distribution: Ubuntu-24.04
+          wsl-version: 2
+          additional-packages: bubblewrap socat procps python3 python3-venv curl ca-certificates bc
+      - name: Store a throwaway test credential in Windows Credential Manager
+        shell: pwsh
+        run: |
+          $value = [Convert]::ToBase64String((1..24 | ForEach-Object { Get-Random -Maximum 256 }) -as [byte[]])
+          Write-Output "::add-mask::$value"
+          cmdkey /generic:council-ci-secret /user:ci /pass:$value | Out-Null
+          "COUNCIL_CI_SECRET_EXPECTED=$value" | Out-File -FilePath $env:GITHUB_ENV -Append
+      - name: Node 24 inside WSL
+        shell: wsl-bash {0}
+        run: |
+          curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash -
+          sudo apt-get install -y nodejs
+          node -v && npm -v
+      - name: Install and run the live sandbox tests inside WSL2
+        shell: wsl-bash {0}
+        env:
+          COUNCIL_TEST_LINUX_SANDBOX: "1"
+          WSLENV: "GITHUB_WORKSPACE/p:COUNCIL_TEST_LINUX_SANDBOX"
+        run: |
+          set -euo pipefail
+          # The checkout lives under /mnt/<drive>; the sandbox refuses /mnt
+          # mounts, so work from a copy inside the Linux filesystem.
+          rm -rf ~/council && cp -r "$GITHUB_WORKSPACE" ~/council && cd ~/council
+          npm ci
+          python3 -m unittest -v tests/scripts/test_linux_process_sandbox.py 2>&1 | tee sandbox-tests.log
+          node scripts/ci-assert-sandbox-tests-ran.mjs < sandbox-tests.log
+      - name: Doctor proves the sandbox by running it
+        shell: wsl-bash {0}
+        # The doctor legitimately reports other failures on a bare runner (no Claude CLI, no client profile); only the sandbox line is under test here.
+        run: cd ~/council && { npm run doctor 2>&1 | tee doctor.log || true; } && grep -q "\[PASS\] Stage 5 sandbox (bubblewrap)" doctor.log
+      - name: "Diagnose: powershell.exe startup and CredRead timing from WSL2"
+        shell: wsl-bash {0}
+        env:
+          COUNCIL_SECRET_SERVICE: council-ci-secret
+          COUNCIL_SECRET_MODE: exists
+          WSLENV: "COUNCIL_SECRET_SERVICE/u:COUNCIL_SECRET_MODE/u:COUNCIL_CI_SECRET_EXPECTED/u"
+        run: |
+          set -uo pipefail
+          export PATH="/mnt/c/Windows/System32/WindowsPowerShell/v1.0:$PATH"
+          echo "== which powershell.exe: $(command -v powershell.exe || echo MISSING)"
+          t0=$(date +%s.%N); powershell.exe -NoProfile -NonInteractive -Command 'exit 0' </dev/null; echo "== bare powershell exit=$? seconds=$(echo "$(date +%s.%N) - $t0" | bc)"
+          t0=$(date +%s.%N); timeout 60 powershell.exe -NoProfile -NonInteractive -Command '$sig = @"
+          [DllImport("advapi32.dll", EntryPoint="CredReadW", CharSet=CharSet.Unicode, SetLastError=true)]
+          public static extern bool CredRead(string target, int type, int flags, out IntPtr credential);
+          [DllImport("advapi32.dll")] public static extern void CredFree(IntPtr credential);
+          "@; $cred = Add-Type -MemberDefinition $sig -Name Native -Namespace CouncilDiag -PassThru; $ptr = [IntPtr]::Zero; if ($cred::CredRead($env:COUNCIL_SECRET_SERVICE, 1, 0, [ref]$ptr)) { Write-Output "present"; $cred::CredFree($ptr); exit 0 } else { Write-Output ("absent lasterror=" + [Runtime.InteropServices.Marshal]::GetLastWin32Error()); exit 2 }' </dev/null 2>&1 | tail -5; echo "== CredRead exists-mode exit=${PIPESTATUS[0]} seconds=$(echo "$(date +%s.%N) - $t0" | bc)"
+          echo "== product read command, stderr visible, stdout reduced to a byte count"
+          cd ~/council && node --input-type=module -e '
+          const { importTypeScriptModule } = await import("./scripts/doctor.mjs");
+          const { secretCommand } = await importTypeScriptModule(process.cwd(), "orchestrator/secretStore");
+          const c = secretCommand("windows-credential-manager", process.env.COUNCIL_SECRET_SERVICE);
+          const { spawnSync } = await import("node:child_process");
+          const r = spawnSync(c.command, c.args, { env: { ...c.env, PATH: process.env.PATH }, encoding: "utf8", timeout: 60000 });
+          console.log("exit:", r.status, "signal:", r.signal, "error:", r.error ? r.error.message : "none");
+          console.log("stdout bytes:", Buffer.byteLength(r.stdout || ""), "matches expected:", (r.stdout || "") === process.env.COUNCIL_CI_SECRET_EXPECTED);
+          console.log("stderr (first 3000 chars):"); console.log((r.stderr || "").slice(0, 3000));
+          console.log("script byte length passed via -Command:", Buffer.byteLength(c.args[c.args.length - 1]));
+          ' || true
+          true
+      - name: Secret bridge from WSL2 to Windows Credential Manager
+        shell: wsl-bash {0}
+        env:
+          COUNCIL_CI_SECRET_SERVICE: council-ci-secret
+          WSLENV: "COUNCIL_CI_SECRET_SERVICE/u:COUNCIL_CI_SECRET_EXPECTED/u"
+        run: |
+          # powershell.exe is not guaranteed to be on PATH inside a wsl-bash
+          # shell (it is reached through WSL interop, not a login PATH), so
+          # prepend the directory the bridge's powershell.exe call needs.
+          export PATH="/mnt/c/Windows/System32/WindowsPowerShell/v1.0:$PATH"
+          cd ~/council && node scripts/ci-secret-bridge-check.mjs
+      - name: Remove the throwaway credential
+        if: always()
+        shell: pwsh
+        run: cmdkey /delete:council-ci-secret
+      # These jobs use local fixtures and never authenticate or invoke AI.
+      # The ubuntu-24.04 matrix leg of the client job proves the sandbox on
+      # native Linux; the wsl2 job proves it inside a real WSL2 distribution.
+      # Neither runs AI.

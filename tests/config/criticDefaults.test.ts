@@ -4,23 +4,11 @@ import { describe, expect, it } from "vitest";
 import { parseCriticRubric } from "@/orchestrator/criticRubric";
 import { MAX_MOCKUP_NAME_CHARS, MAX_REQUIRED_MOCKUPS } from "@/lib/mockupContract";
 import { MAX_PLACEMENT_PROVES_CHARS, MAX_PLACEMENT_SECTION_CHARS } from "@/orchestrator/assetQuality";
+import { clientContentViolation } from "@/scripts/package-client.mjs";
 
-// The packaged defaults must never name the owner. Built from character codes
-// / concatenated fragments rather than literal text so this test file itself
-// never spells the name out either: scripts/package-client.mjs scans every
-// archived file's content (this test included) for the owner's name and fails
-// the build on a bare occurrence, exactly as it must for a client-facing
-// archive. The checks below are functionally identical to a literal match
-// against the Hebrew given name, the Hebrew surname and the English given
-// name (standalone or hyphenated, as in a skill slug).
-const OWNER_GIVEN_HE = String.fromCharCode(1497, 1492, 1489);
-const OWNER_SURNAME_HE = String.fromCharCode(1512, 1493, 1489, 1497, 1503);
-const OWNER_GIVEN_EN = "ya" + "hav";
-const OWNER_NAME_RE = new RegExp(`${OWNER_GIVEN_HE}|${OWNER_SURNAME_HE}`);
-const OTHER_SKILL_MENTION_RE = new RegExp(
-  ["designBrief", "אישור המשתמש", `${OWNER_GIVEN_EN}-design-agent`, OWNER_GIVEN_EN, OWNER_GIVEN_HE].join("|"),
-  "i",
-);
+// Keep private identity values out of the tests too, including reversible
+// character-code or fragment encodings. The shared scanner owns that policy.
+const OTHER_SKILL_MENTION_RE = /designBrief|אישור המשתמש/i;
 
 describe("packaged critic defaults", () => {
   it("parse, carry thresholds and at least five dimensions, and name no person", async () => {
@@ -29,7 +17,7 @@ describe("packaged critic defaults", () => {
       const rubric = parseCriticRubric(name, text);
       expect(rubric.thresholds).toEqual({ avg: 8, min: 7 });
       expect(rubric.dimensions.length).toBeGreaterThanOrEqual(5);
-      expect(text).not.toMatch(OWNER_NAME_RE);
+      expect(clientContentViolation(text)).toBeUndefined();
     }
     // Task 14: dimension 5 is where a missing requiredMockups list is caught,
     // before 5.2 has to stop the run over it.
@@ -41,6 +29,7 @@ describe("packaged critic defaults", () => {
     expect(strategy).toMatch(/playbook/i);
     expect(strategy).toContain("imageMap");
     expect(strategy).toContain("harvestFile");
+    expect(clientContentViolation(strategy)).toBeUndefined();
     expect(strategy).not.toMatch(OTHER_SKILL_MENTION_RE);
     expect(strategy).not.toMatch(/גבר|נשי|נשים|גברי/);
   });
@@ -75,10 +64,6 @@ describe("packaged critic defaults", () => {
     expect(skill).not.toMatch(/codex exec -i/);
     // The presenter stays a requirement, now on the screens 5.2 writes.
     expect(skill).toMatch(/presenter/i);
-    // The packaged copy is client facing: no owner name, no shekel amounts.
-    // The sign is built from its code point so this file itself stays clean
-    // for the packaging scanner, exactly as the owner name above is.
-    expect(skill).not.toMatch(OWNER_NAME_RE);
-    expect(skill).not.toContain(String.fromCharCode(8362));
+    expect(clientContentViolation(skill)).toBeUndefined();
   });
 });

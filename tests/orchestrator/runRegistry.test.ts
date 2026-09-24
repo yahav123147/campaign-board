@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -83,8 +83,7 @@ describe("runRegistry persistence", () => {
       order.push("second-end");
     });
 
-    await new Promise<void>((resolve) => setTimeout(resolve, 20));
-    expect(order).toEqual(["first-start"]);
+    await vi.waitFor(() => expect(order).toEqual(["first-start"]));
     releaseFirst();
     await Promise.all([first, second]);
     expect(order).toEqual(["first-start", "first-end", "second-start", "second-end"]);

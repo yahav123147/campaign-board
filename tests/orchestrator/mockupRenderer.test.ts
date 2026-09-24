@@ -988,7 +988,9 @@ describe("renderMockups", () => {
   // own deadline ends the run.
   it("rejects only the mockup whose composite timed out, and renders the rest", async () => {
     process.env.FAKE_PYTHON_MODE = "composite-hang";
-    process.env.CAMPAIGN_COUNCIL_MOCKUP_PYTHON_TIMEOUT_MS = "1500";
+    // This cap also covers healthy supervised subprocess startup. Leave enough
+    // time under full-suite load; the selected fixture hangs indefinitely.
+    process.env.CAMPAIGN_COUNCIL_MOCKUP_PYTHON_TIMEOUT_MS = "5000";
     await writeSizes({ "ch1-laptop": [1200, 800], "ch2-laptop": [1200, 800] });
     await writeScreen("ch2-laptop", PLAIN_SCREEN);
 

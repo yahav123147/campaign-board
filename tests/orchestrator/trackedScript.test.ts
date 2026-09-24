@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 import { TrackedScriptTimeoutError, runTrackedScript } from "@/orchestrator/trackedScript";
 
@@ -13,7 +14,15 @@ describe("runTrackedScript", () => {
     const marker = `council-tracked-${process.pid}-${Date.now()}`;
     // A parent that spawns a child sleeper carrying a unique marker in its argv, then sleeps itself.
     const tree = `import subprocess, sys, time; subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60) # ${marker}"]); time.sleep(60)`;
-    const alive = async () => (await import("node:child_process")).execSync(`pgrep -f "${marker}" || true`).toString().trim() !== "";
+    const alive = () => {
+      // A shell command containing the marker matches its own ancestor on
+      // Linux. Invoke pgrep directly so this checks only the fixture processes.
+      const result = spawnSync("pgrep", ["-f", marker], { encoding: "utf8" });
+      if (result.error) throw result.error;
+      if (result.status === 1) return false;
+      if (result.status !== 0) throw new Error(`pgrep failed: ${result.stderr}`);
+      return result.stdout.trim() !== "";
+    };
     const controller = new AbortController();
     const running = runTrackedScript({ command: "python3", args: ["-c", tree], cwd: process.cwd(), signal: controller.signal, timeoutMs: 60_000, label: "tree" });
     await new Promise((r) => setTimeout(r, 700));

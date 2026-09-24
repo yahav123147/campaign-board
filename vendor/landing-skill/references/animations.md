@@ -11,7 +11,7 @@ export const fadeUp = {
   visible: {
     opacity: 1,
     y: 0,
-    transition: { duration: 0.6, ease: "easeOut" }
+    transition: { duration: 0.6, ease: "easeOut" as const }
   }
 };
 
@@ -30,7 +30,7 @@ export const scaleUp = {
   visible: {
     opacity: 1,
     scale: 1,
-    transition: { duration: 0.5, ease: "easeOut" }
+    transition: { duration: 0.5, ease: "easeOut" as const }
   }
 };
 
@@ -40,7 +40,7 @@ export const slideFromRight = {
   visible: {
     opacity: 1,
     x: 0,
-    transition: { duration: 0.6, ease: "easeOut" }
+    transition: { duration: 0.6, ease: "easeOut" as const }
   }
 };
 ```
@@ -114,7 +114,7 @@ export const ctaPulse = {
   transition: {
     duration: 2,
     repeat: Infinity,
-    ease: "easeInOut"
+    ease: "easeInOut" as const
   }
 };
 ```
@@ -149,7 +149,7 @@ export const goldGlow = {
   transition: {
     duration: 2,
     repeat: Infinity,
-    ease: "easeInOut"
+    ease: "easeInOut" as const
   }
 };
 ```
@@ -197,7 +197,7 @@ export const typewriter = {
     width: "100%",
     transition: {
       duration: 2,
-      ease: "linear"
+      ease: "linear" as const
     }
   }
 };
@@ -213,7 +213,7 @@ const count = useMotionValue(0);
 useEffect(() => {
   const controls = animate(count, targetNumber, {
     duration: 2,
-    ease: "easeOut"
+    ease: "easeOut" as const
   });
   return controls.stop;
 }, []);
@@ -300,7 +300,7 @@ gsap.registerPlugin(ScrollTrigger);
 // Parallax effect
 gsap.to(".parallax-element", {
   yPercent: -50,
-  ease: "none",
+  ease: "none" as const,
   scrollTrigger: {
     trigger: ".parallax-container",
     start: "top bottom",
@@ -313,7 +313,7 @@ gsap.to(".parallax-element", {
 gsap.to(".counter", {
   textContent: 1000,
   duration: 2,
-  ease: "power2.out",
+  ease: "power2.out" as const,
   snap: { textContent: 1 },
   scrollTrigger: {
     trigger: ".counter",

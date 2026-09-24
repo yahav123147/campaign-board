@@ -56,6 +56,7 @@ import type { ExecutionControl } from "./executionService";
 import { assertClientFeatureReady } from "./stage89Safety";
 import { renderClientContext } from "./clientContext";
 import { resolvePython } from "./runStage7Creatives";
+import { availableImageSystemTools, imageSystemToolsLine } from "./imageSystemTools";
 import type { AssetType, Run } from "@/types";
 
 const SUB_ID = "5.2";
@@ -209,12 +210,14 @@ export function buildAssetSandboxSettings(args: {
       autoAllowBashIfSandboxed: true,
       allowUnsandboxedCommands: false,
       filesystem: {
-        denyRead: [os.homedir()],
+        // WSL host integration must remain outside the Bash tool's reach.
+        // Do not rely on the operator's Windows filesystem being private.
+        denyRead: [os.homedir(), ...(process.platform === "linux" ? ["/mnt", "/media", "/init", "/run/WSL"] : [])],
         allowRead,
       },
       network: {
         allowedDomains: [...new Set(args.allowedDomains)],
-        allowLocalBinding: true,
+        allowLocalBinding: false,
         allowAllUnixSockets: false,
       },
     },
@@ -752,8 +755,7 @@ export async function runStage5Assets(
     renderDeclaredMockups = () => (mockupRenderOnce ??= renderOnce());
     // A shell fallback the tools block can point to when a python tool fails;
     // only listed if it actually exists on this machine (never assumed).
-    const cwebpPath = "/opt/homebrew/bin/cwebp";
-    const cwebpAvailable = await fs.access(cwebpPath).then(() => true).catch(() => false);
+    const systemImageTools = await availableImageSystemTools();
     await ensureManagedDirectory(assetsDir, runDir);
     await recoverCutoutTransactions(assetsDir);
     reusableHashes = await readReusableAssetHashes(
@@ -964,7 +966,7 @@ ${reference.url ? `דף חי: ${reference.url}` : "אין דף חי"}
 - checker: \`${python} ${path.join(process.cwd(), "scripts", "check-cutout.py")} --source <מקור> <מועמד-cutout>\`
 - marker: \`${python} ${markerScriptPath} <in.png> <out.webp-or-png> x0 y0 x1 y1 --style circle\`
 - המפרש: \`${python}\` (כולל Pillow ו-certifi). אין להתקין חבילות; אם כלי נכשל, דווח את השגיאה המדויקת.
-- כלי מערכת קיימים תמיד במכונה הזו, להמרה ולחיתוך בלי פייתון: ${cwebpAvailable ? `\`${cwebpPath}\` ו-` : ""}\`/usr/bin/sips\`.${renderContractLine}
+- ${imageSystemToolsLine(systemImageTools)}${renderContractLine}
 אל תניח שהפרויקט מותקן תחת \`~/campaign-council\`; אלה הנתיבים הסמכותיים לריצה הנוכחית.
 
 ### תוכנית נכסים שחייבת להתאים לניסיון הזה

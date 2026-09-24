@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { connection } from "next/server";
 import "./globals.css";
 import { loadClientProfile } from "@/config/clientProfile";
 import { BoardNameProvider } from "@/components/BoardNameProvider";
@@ -12,6 +13,8 @@ import { DEFAULT_BOARD_NAME, boardNameFrom } from "@/lib/boardName";
  * an unset name does.
  */
 async function resolveBoardName(): Promise<string> {
+  // Installation settings are runtime data, including for otherwise static pages.
+  await connection();
   const profile = await loadClientProfile().catch(() => undefined);
   return profile ? boardNameFrom(profile.ui?.boardName) : DEFAULT_BOARD_NAME;
 }

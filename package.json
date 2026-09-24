@@ -12,6 +12,7 @@
     "start": "NEXT_TELEMETRY_DISABLED=1 next start -H 127.0.0.1",
     "lint": "eslint",
     "doctor": "node scripts/doctor.mjs",
+    "configure": "node scripts/configure-client.mjs",
     "package:client": "node scripts/package-client.mjs",
     "test": "vitest run && python3 -m unittest discover -s tests/scripts -p 'test_*.py'",
     "test:watch": "vitest"

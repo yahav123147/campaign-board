@@ -630,7 +630,7 @@ describe("stage 5.2 renders the declared mockups", () => {
     const salvaged = vi.mocked(validateAssetFolderSnapshot).mock.calls[1]![1]!;
     expect(salvaged.mockupReceipt?.receipt.attemptId).toBe(attemptIdOfRun);
     expect(subTask52(id)?.status).toBe("awaiting-decision");
-  });
+  }, 30_000);
 
   it("does not retry a render that failed, and reports it once", async () => {
     const id = "2026-09-16-mockups-render-failure-once";

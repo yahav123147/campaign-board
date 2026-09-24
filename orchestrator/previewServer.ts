@@ -5,7 +5,8 @@ import fs from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
 import net from "node:net";
 import { spawn, type ChildProcess } from "node:child_process";
-import { sandboxedNodeLaunch } from "./processSandbox";
+import { prepareLinuxSandboxFiles, sandboxedNodeLaunch } from "./processSandbox";
+import { isWsl } from "./secretStore";
 import {
   signalTrackedChildProcess,
   supervisedProcessTreeLaunch,
@@ -235,6 +236,10 @@ async function startPreviewServerOnce(
   const nextOutput = path.join(workspaceDir, ".next");
   await fs.mkdir(nextOutput, { recursive: true, mode: 0o700 });
   await fs.mkdir(path.dirname(resolvedLogFile), { recursive: true });
+  await prepareLinuxSandboxFiles([resolvedLogFile, path.join(workspaceDir, "next-env.d.ts")]).catch(async (error) => {
+    await fs.rm(sandboxHome, { recursive: true, force: true });
+    throw error;
+  });
   const launch = await sandboxedNodeLaunch(
     process.execPath,
     [
@@ -258,14 +263,23 @@ async function startPreviewServerOnce(
       // not touch the delivered branch.
       writePaths: [nextOutput, sandboxHome, resolvedLogFile, path.join(workspaceDir, "next-env.d.ts")],
       network: "loopback-server",
+      loopbackPort: PREVIEW_PORT,
+      workingDirectory: workspaceDir,
     },
   ).catch(async (error) => {
     await fs.rm(sandboxHome, { recursive: true, force: true });
     throw error;
   });
-  // Record the exact Seatbelt profile next to the server output, so a sandbox
+  const cleanupLaunch = async () => {
+    if (launch.cleanupPath) await fs.rm(launch.cleanupPath, { recursive: true, force: true });
+    await fs.rm(sandboxHome, { recursive: true, force: true });
+  };
+  // Record the exact platform profile next to the server output, so a sandbox
   // denial can be read from the run's own logs instead of reproduced by hand.
-  await fs.appendFile(resolvedLogFile, `\n# sandbox profile\n${launch.profile}\n# end profile\n`, "utf8");
+  await fs.appendFile(resolvedLogFile, `\n# sandbox profile\n${launch.profile}\n# end profile\n`, "utf8").catch(async (error) => {
+    await cleanupLaunch();
+    throw error;
+  });
   const processTreeLaunch = supervisedProcessTreeLaunch(launch.command, launch.args);
   const out = await fs.open(
     resolvedLogFile,
@@ -288,7 +302,7 @@ async function startPreviewServerOnce(
       throw error;
     }
   }).catch(async (error) => {
-    await fs.rm(sandboxHome, { recursive: true, force: true });
+    await cleanupLaunch();
     throw error;
   });
   let proc: ChildProcess;
@@ -313,7 +327,7 @@ async function startPreviewServerOnce(
       },
     );
   } catch (error) {
-    await fs.rm(sandboxHome, { recursive: true, force: true });
+    await cleanupLaunch();
     throw error;
   } finally {
     await out.close();
@@ -323,7 +337,7 @@ async function startPreviewServerOnce(
   globalForPreview.__councilPreviewWorkspace = workspaceDir;
   globalForPreview.__councilPreviewSandboxHome = sandboxHome;
   proc.once("close", () => {
-    void fs.rm(sandboxHome, { recursive: true, force: true });
+    void cleanupLaunch();
     if (globalForPreview.__councilPreview === proc) {
       globalForPreview.__councilPreview = undefined;
       globalForPreview.__councilPreviewWorkspace = undefined;
@@ -382,11 +396,35 @@ export async function waitForPage(url: string, signal?: AbortSignal): Promise<nu
   return last;
 }
 
-/** macOS only: put the page in front of the reviewer instead of relying on a click. */
-export function openInBrowser(url: string): boolean {
-  if (process.platform !== "darwin") return false;
+/** Put the page in front of the reviewer. False means: print the link instead. */
+export function openInBrowser(
+  url: string,
+  deps: { platform?: NodeJS.Platform; wsl?: boolean; spawn?: typeof spawn } = {},
+): boolean {
+  const platform = deps.platform ?? process.platform;
+  const launch = deps.spawn ?? spawn;
+  let command: string;
+  let args: string[];
+  if (platform === "darwin") {
+    command = "open";
+    args = [url];
+  } else if (platform === "linux" && (deps.wsl ?? isWsl())) {
+    command = "powershell.exe";
+    args = ["-NoProfile", "-NonInteractive", "-Command", "Start-Process", url];
+  } else if (platform === "linux") {
+    command = "xdg-open";
+    args = [url];
+  } else {
+    return false;
+  }
   try {
-    spawn("open", [url], { stdio: "ignore", detached: true }).unref();
+    const child = launch(command, args, { stdio: "ignore", detached: true });
+    // A missing launcher (powershell.exe off PATH in a WSL2 shell, no
+    // xdg-open on a headless box) surfaces as an asynchronous "error" event,
+    // not a throw; with no listener it would take the whole board down.
+    // Measured inside WSL2: 1394 tests passed and the process still died.
+    child.on("error", () => {});
+    child.unref();
     return true;
   } catch {
     return false;

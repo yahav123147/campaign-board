@@ -1,3 +1,5 @@
+import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
@@ -7,18 +9,23 @@ import {
   doctorCheck,
   formatDoctorReport,
   importCanonicalClientProfile,
+  importTypeScriptModule,
   macOnlyCapabilityStatus,
   metaGraphApiVersionCheck,
   missingRequiredImageModules,
+  mockupBrowserCheck,
   parseLoopbackPort,
   parsePythonRequirements,
   parseRelevantDotEnv,
   parseVersion,
+  probeLinuxSandbox,
   processTreePlatformCheck,
   pythonImportName,
   REQUIRED_IMAGE_MODULES,
   resolveDoctorDataPaths,
   resolveDoctorPython,
+  secretStoreCheck,
+  stage5SandboxCheck,
   summarizeChecks,
   versionAtLeast,
 } from "../../scripts/doctor.mjs";
@@ -104,12 +111,118 @@ describe("doctor pure checks", () => {
     expect(pythonImportName("numpy")).toBe("numpy");
   });
 
+  it("checks the renderer's chosen browser and blocks a missing browser only when stage 5 is enabled", async () => {
+    const override = "/client/chosen-browser";
+    const result = await mockupBrowserCheck({ stage5: { enabled: true } }, {
+      CAMPAIGN_COUNCIL_CHROME_PATH: override,
+    }, async (options) => {
+      expect(options?.chromePath).toBe(override);
+      return override;
+    });
+    expect(result.status).toBe("pass");
+    expect(result.summary).toContain(override);
+    const missing = async () => { throw new Error("unavailable"); };
+    expect((await mockupBrowserCheck({ stage5: { enabled: true } }, {}, missing)).status).toBe("fail");
+    expect((await mockupBrowserCheck({ stage5: { enabled: false } }, {}, missing)).status).toBe("warn");
+  });
+
   it("loads the canonical profile validator with its @/ imports resolved", async () => {
     // The validator imports a value from "@/types". A data: URL module cannot
     // resolve a bare alias, so the doctor reported "could not be loaded" on
     // every install, correct ones included.
     const validator = await importCanonicalClientProfile(path.resolve(import.meta.dirname, "..", ".."));
     expect(typeof validator.validateClientProfile).toBe("function");
+  });
+
+  it("loads any @/ TypeScript module the same way it loads the profile validator", async () => {
+    const root = path.resolve(import.meta.dirname, "..", "..");
+    const sandbox = await importTypeScriptModule(root, "orchestrator/linuxProcessSandbox");
+    expect(typeof sandbox.linuxSandboxedNodeLaunch).toBe("function");
+  });
+
+  it("on Linux reports the sandbox by running it, and fails when the probe fails", async () => {
+    const pass = await stage5SandboxCheck({ stage5: { enabled: true } }, "linux", { probe: async () => ({ ok: true, detail: "allowed write ok, /etc hidden" }) });
+    expect(pass).toMatchObject({ id: "stage5-native-sandbox", status: "pass" });
+    const fail = await stage5SandboxCheck({ stage5: { enabled: true } }, "linux", { probe: async () => ({ ok: false, detail: "bwrap: No permissions to create user namespace" }) });
+    expect(fail).toMatchObject({ status: "fail" });
+    expect(fail.summary).toContain("user namespace");
+    const off = await stage5SandboxCheck({ stage5: { enabled: false } }, "linux", { probe: async () => ({ ok: false, detail: "x" }) });
+    expect(off.status).toBe("warn");
+  });
+
+  it("probeLinuxSandbox reports pass and removes the launch's cleanupPath when the script exits 0", async () => {
+    const cleanupPath = await fs.mkdtemp(path.join(os.tmpdir(), "council-doctor-test-cleanup-"));
+    const launch = async () => ({
+      command: process.execPath,
+      args: ["-e", "process.exit(0)"],
+      profile: "{}",
+      cleanupPath,
+    });
+    const result = await probeLinuxSandbox("unused-root", { launch });
+    expect(result.ok).toBe(true);
+    await expect(fs.access(cleanupPath)).rejects.toThrow();
+  });
+
+  it("probeLinuxSandbox reports fail with the script's stdout in detail when it exits non-zero", async () => {
+    const cleanupPath = await fs.mkdtemp(path.join(os.tmpdir(), "council-doctor-test-cleanup-"));
+    const launch = async () => ({
+      command: process.execPath,
+      args: ["-e", "process.stdout.write('boom'); process.exit(1);"],
+      profile: "{}",
+      cleanupPath,
+    });
+    const result = await probeLinuxSandbox("unused-root", { launch });
+    expect(result.ok).toBe(false);
+    expect(result.detail).toContain("boom");
+    await expect(fs.access(cleanupPath)).rejects.toThrow();
+  });
+
+  it("probeLinuxSandbox fails fast, not only on the timeout, when the launch command cannot spawn", async () => {
+    const cleanupPath = await fs.mkdtemp(path.join(os.tmpdir(), "council-doctor-test-cleanup-"));
+    const launch = async () => ({
+      command: "/nonexistent/binary",
+      args: [],
+      profile: "{}",
+      cleanupPath,
+    });
+    const start = Date.now();
+    const result = await probeLinuxSandbox("unused-root", { launch });
+    const elapsed = Date.now() - start;
+    expect(result.ok).toBe(false);
+    expect(result.detail).toContain("ENOENT");
+    expect(elapsed).toBeLessThan(5000);
+    await expect(fs.access(cleanupPath)).rejects.toThrow();
+  });
+
+  it("probeLinuxSandbox times out and kills a hung script, still cleaning up", async () => {
+    const cleanupPath = await fs.mkdtemp(path.join(os.tmpdir(), "council-doctor-test-cleanup-"));
+    const launch = async () => ({
+      command: process.execPath,
+      args: ["-e", "setInterval(() => {}, 1000)"],
+      profile: "{}",
+      cleanupPath,
+    });
+    const start = Date.now();
+    const result = await probeLinuxSandbox("unused-root", { launch, timeoutMs: 300 });
+    const elapsed = Date.now() - start;
+    expect(result.ok).toBe(false);
+    expect(result.detail).toContain("timed out");
+    // The 300ms timeout kills the child well inside vitest's default 5s test
+    // timeout; a resolution this fast is only possible if the SIGKILL fired
+    // instead of the process being left to run indefinitely.
+    expect(elapsed).toBeLessThan(2000);
+    await expect(fs.access(cleanupPath)).rejects.toThrow();
+  });
+
+  it("fails the secret-store check closed, instead of crashing the doctor, when the module cannot load", async () => {
+    const failingLoad = async () => { throw new Error("boom"); };
+    const disabled = await secretStoreCheck({}, {}, "darwin", false, failingLoad);
+    expect(disabled.status).toBe("warn");
+    expect(disabled.summary).toBe("The secret store module could not be loaded.");
+    expect(disabled.action).toContain("npm install");
+
+    const enabled = await secretStoreCheck({}, { stage8: { enabled: true } }, "darwin", false, failingLoad);
+    expect(enabled.status).toBe("fail");
   });
 
   it("requires owner-only Unix permissions and matching ownership", () => {

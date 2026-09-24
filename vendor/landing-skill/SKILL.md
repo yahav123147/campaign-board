@@ -28,7 +28,7 @@ Every page ships only after `scripts/landing-qa.mjs` prints **RESULT: PASS** on 
 | 14 | **Page length = delivered copy.** No extra sections. No AI tells (meta-comments, placeholder labels). | eye check |
 | 15 | **Real assets only**: `git ls-tree`/project folder first; presenter face never generated; no invented testimonials. | process |
 | 17 | **"כפי שהופיעה ב:" logo strip is the FIRST thing on the page**, above the pre-headline ("משם הדף מתחיל"). Use ALL logos the harvest found (media, venues, festivals, partners), monochrome white-on-transparent, ~66px desktop / 34px mobile, wrapping to 2 rows on mobile. | eye check |
-| 18 | **Every numeric authority claim gets a REAL screenshot next to it, with the number marked.** The proof screenshot is supplied by the run, never taken by you, and it arrives already cropped and marked (a smooth hand-drawn red circle around the count, or a yellow highlighter) among 5.2's assets: you place it, you never crop it and you never run the marker tool yourself. You never run a browser, and you never rebuild the screen in HTML: "זה תמיד אמור להיות צילום אמיתי" (23.08.2026), and a rebuilt screen is not proof. Place the finished file as a rounded card + a big accent number + the presenter's face in a circle. Same for "מספר הדגל של המותג", "מספר החברים": screenshot or mockup adjacent to the claim, never a bare sentence. If no proof file reached you, the number stays in the missing-assets list and no image is invented for it. Numbers/handles inside RTL text get `dir="ltr"`. | eye check |
+| 18 | **Every numeric authority claim gets a REAL screenshot next to it, with the number marked.** The proof screenshot is supplied by the run, never taken by you, and it arrives already cropped and marked (a smooth hand-drawn red circle around the count, or an underline outside the screenshot text) among 5.2's assets: you place it, you never crop it and you never run the marker tool yourself. Preserve the screenshot pixels: do not cover text with color fills, blend-mode overlays or reconstructed message bubbles. If a supplied annotation obscures the text, report the asset for correction in 5.2. You never run a browser, and you never rebuild the screen in HTML: "זה תמיד אמור להיות צילום אמיתי" (23.08.2026), and a rebuilt screen is not proof. Place the finished file as a rounded card + a big accent number + the presenter's face in a circle. Same for "מספר הדגל של המותג", "מספר החברים": screenshot or mockup adjacent to the claim, never a bare sentence. If no proof file reached you, the number stays in the missing-assets list and no image is invented for it. Numbers/handles inside RTL text get `dir="ltr"`. | eye check |
 | 16 | **Review on a real URL, not the artifact viewer** (it adds a side gutter that reads as off-center). Deploy static to Netlify: link the folder to ITS OWN site first (`netlify link --id …`); a folder linked to another site's id overwrites that site's production. | process |
 
 **Running the gate:** `cp scripts/landing-qa.mjs scripts/orphanLines.mjs <landing-repo>/ && (cd <landing-repo> && node landing-qa.mjs <file-or-url>; rm landing-qa.mjs orphanLines.mjs)` (the gate imports `orphanLines.mjs` from its own folder, so the two files travel together). Fix order for orphans: `text-wrap:balance` (headings) / `text-wrap:pretty` + `&nbsp;` glue of the last two words (body) → `white-space:nowrap` on a short phrase → narrower clamp minimum → shorten the line.
@@ -237,7 +237,7 @@ const fadeUp = {
   visible: {
     opacity: 1,
     y: 0,
-    transition: { duration: 0.6, ease: "easeOut" }
+    transition: { duration: 0.6, ease: "easeOut" as const }
   }
 };
 
@@ -263,7 +263,7 @@ const goldGlow = {
   transition: {
     duration: 2,
     repeat: Infinity,
-    ease: "easeInOut"
+    ease: "easeInOut" as const
   }
 };
 ```

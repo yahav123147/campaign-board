@@ -67,7 +67,7 @@ import {
   prepareLandingWorktree,
   runLandingGit as runGitInRepository,
 } from "./landingWorktree";
-import { sandboxedNodeLaunch } from "./processSandbox";
+import { prepareLinuxSandboxFiles, sandboxedNodeLaunch } from "./processSandbox";
 import { renderClientContext } from "./clientContext";
 import { readRunPageTypeBlueprint } from "./pageTypeBlueprint";
 import { pageCopyForBuild } from "./stageRegistry";
@@ -353,10 +353,30 @@ export async function resolveNextCli(nodeModules: string): Promise<string> {
   return shim;
 }
 
+/**
+ * The message a failed build hands the agent and the operator. The compiler's
+ * "file(line,col): error TSxxxx" lines come first, so a rerun knows where to
+ * look; the raw tail alone began mid-sentence (WSL2 acceptance run
+ * 35877627654 reran three times on the same widened-string easing without
+ * ever being told the file and line).
+ */
+export function landingBuildFailureMessage(code: number | null, output: string, hint = ""): string {
+  const located = [...output.matchAll(/^(.+\.\w+\(\d+,\d+\): error TS\d+: .+)$/gm)].map((match) => match[1]).slice(0, 5);
+  const where = located.length ? `${located.join("\n")}\n---\n` : "";
+  return `Landing build failed (exit ${code}): ${where}${output.slice(-4_000)}${hint}`;
+}
+
 async function runLandingBuild(
   workspaceDir: string,
   dependencyWorkspace: string,
   signal?: AbortSignal,
+  /**
+   * The run log to record the exact sandbox profile in (the same
+   * "# sandbox profile" block the preview server writes), so a reviewer can
+   * read from the run's own logs that the build ran with network "none" on
+   * Linux instead of reproducing the launch by hand.
+   */
+  profileLogFile?: string,
 ): Promise<string> {
   if (signal?.aborted) return Promise.reject(new Error("Landing build was aborted"));
   const sandboxHome = await fs.mkdtemp(path.join(os.tmpdir(), "campaign-council-build-"));
@@ -373,6 +393,10 @@ async function runLandingBuild(
     throw new Error("The configured Next.js executable escaped node_modules");
   }
   await fs.mkdir(path.join(workspaceDir, ".next"), { recursive: true, mode: 0o700 });
+  await prepareLinuxSandboxFiles([path.join(workspaceDir, "next-env.d.ts")]).catch(async (error) => {
+    await fs.rm(sandboxHome, { recursive: true, force: true });
+    throw error;
+  });
   const launch = await sandboxedNodeLaunch(
     process.execPath,
     ["--max-old-space-size=1536", nextScript, "build", "--webpack"],
@@ -380,13 +404,21 @@ async function runLandingBuild(
       readPaths: [workspaceDir, nodeModules, sandboxHome],
       // `next build` refreshes next-env.d.ts (gitignored) exactly like `next dev`.
       writePaths: [path.join(workspaceDir, ".next"), sandboxHome, path.join(workspaceDir, "next-env.d.ts")],
-      // next/font/google in the client layout downloads fonts during the build.
-      network: "https-egress",
+      // Linux intentionally builds the local-font starter offline. The backend
+      // rejects HTTPS requests rather than silently weakening that contract.
+      network: process.platform === "linux" ? "none" : "https-egress",
+      workingDirectory: workspaceDir,
     },
   ).catch(async (error) => {
     await fs.rm(sandboxHome, { recursive: true, force: true });
     throw error;
   });
+  if (profileLogFile) {
+    await fs.appendFile(profileLogFile, `\n# sandbox profile\n${launch.profile}\n# end profile\n`, "utf8").catch(async (error) => {
+      await fs.rm(sandboxHome, { recursive: true, force: true });
+      throw error;
+    });
+  }
   const processTreeLaunch = supervisedProcessTreeLaunch(launch.command, launch.args);
 
   try {
@@ -453,7 +485,8 @@ async function runLandingBuild(
       };
       proc.stdout!.on("data", capture);
       proc.stderr!.on("data", capture);
-      proc.on("error", (error) => finish(error));
+      // A failed spawn also emits close; release host launch state only then.
+      proc.on("error", (error) => { terminationError ??= error; });
       proc.on("close", (code) => {
         closed = true;
         if (forceKill) clearTimeout(forceKill);
@@ -461,13 +494,17 @@ async function runLandingBuild(
         if (terminationError) {
           finish(terminationError);
         } else if (code !== 0) {
-          finish(new Error(`Landing build failed (exit ${code}): ${output.toString("utf8").slice(-4_000)}`));
+          const offlineHint = process.platform === "linux"
+            ? " Linux builds run offline; use the included local-font starter and remove next/font/google or other build-time downloads."
+            : "";
+          finish(new Error(landingBuildFailureMessage(code, output.toString("utf8"), offlineHint)));
         } else {
           finish();
         }
       });
     });
   } finally {
+    if (launch.cleanupPath) await fs.rm(launch.cleanupPath, { recursive: true, force: true });
     await fs.rm(sandboxHome, { recursive: true, force: true });
   }
 }
@@ -1044,6 +1081,7 @@ The page is checked by a strict static analyser before it is built. A single vio
 - JSX: never render \`<link>\`, \`<script>\`, \`<meta>\`, \`<iframe>\`, \`<video>\`, \`<audio>\`, \`<source>\`, \`<object>\`, \`<embed>\`. No \`dangerouslySetInnerHTML\`, no \`action\`/\`formAction\`, no JSX spread attributes (\`{...props}\`). Fonts come from the app layout; declare \`fontFamily\` as a plain string with a generic fallback, never load a font yourself.
 - Syntax: no classes, no \`this\`, no \`try\`/\`catch\`/\`throw\`, no \`switch\`, no \`while\`/\`do\`/\`for\` loops (use \`map\`/\`filter\`), no \`await\`/\`yield\`, no \`delete\`, no tagged templates, no getters/setters, no decorators, no \`import.meta\`, no dynamic \`import()\`, no computed member access with a variable key (literal indexes like row[0] are fine; \`obj[key]\`), no mutation of objects or arrays after creation (\`x.y = z\`, \`arr.push\`), no \`Function\`/\`eval\`.
 - Top level: only \`"use client"\`, imports, \`const\` declarations with literal/arrow initialisers, function declarations, and one default export. No top-level side effects.
+- Type-check floor: \`next build\` type-checks the page. framer-motion 12 types \`ease\` as \`Easing\`, so a transition object declared on its own widens \`ease: "easeOut"\` to \`string\` and fails the build. Write \`ease: "easeOut" as const\`, or a bezier array \`ease: [0.16, 1, 0.3, 1]\`, or declare the object inline where a \`Variants\`/\`Transition\` type is expected.
 - QA floor (the automated gate rejects the page otherwise): every \`fontSize\` on the page is at least \`14px\` (legal footer links and placeholder labels included; use 0.875rem+), and no headline may leave a single word alone on its last line at any width from 320 to 1280 (break lines with block \`span\`s into a descending pyramid).
 `;
 }
@@ -1309,7 +1347,7 @@ export async function runStage5LpBuild(
     // reused by ensurePreviewServer, so round 1 would render the previous build
     // while the image map check is sealed to the new source. Stop it first.
     stopPreview();
-    await runLandingBuild(landingWorkspace, baseWorkspace, control?.signal);
+    await runLandingBuild(landingWorkspace, baseWorkspace, control?.signal, path.join(runDir, "logs", logName));
     await verifyBuilderPostflight(postflightArgs);
 
     // ===== Design rounds: render, critique, revise =====
@@ -1454,7 +1492,7 @@ export async function runStage5LpBuild(
       });
       control?.throwIfAborted();
       await verifyWithStaticRepairs();
-      await runLandingBuild(landingWorkspace, baseWorkspace, control?.signal);
+      await runLandingBuild(landingWorkspace, baseWorkspace, control?.signal, path.join(runDir, "logs", logName));
       await verifyBuilderPostflight(postflightArgs);
     }
 

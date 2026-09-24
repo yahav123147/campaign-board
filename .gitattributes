@@ -3,3 +3,9 @@
 /docs export-ignore
 /AGENTS.md export-ignore
 /CLAUDE.md export-ignore
+
+# A checkout on Windows Git (core.autocrlf=true) wrote CRLF into setup.sh, and
+# bash inside WSL2 then failed at the shebang with "cannot execute: required
+# file not found" (exit 127). Text files are LF on every platform so a clone
+# made on the Windows side and copied into WSL2 still runs.
+* text=auto eol=lf

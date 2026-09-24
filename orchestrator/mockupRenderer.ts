@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { mockupBrowserExecutablePath } from "../scripts/browser-executable.mjs";
 import { runsRoot } from "@/lib/runStore";
 import type { MockupRenderReceipt, MockupRenderReceiptEntry } from "@/types";
 import {
@@ -959,6 +960,8 @@ export async function renderMockups(args: RenderMockupsArgs): Promise<MockupRend
       // The profile is empty on purpose: the screens are local files, and no
       // session of the operator's has any business inside this browser.
       chrome = await startSupervisedChrome({
+        executablePath: await mockupBrowserExecutablePath(),
+        headless: true,
         profileDir,
         signal: args.signal,
         deadline: args.deadline,

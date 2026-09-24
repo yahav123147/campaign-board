@@ -1,6 +1,8 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import fsSync from "node:fs";
+import { linuxLandingAccepted } from "./platformAcceptance";
+import { linuxSandboxedNodeLaunch } from "./linuxProcessSandbox";
 
 export type SandboxNetworkMode = "none" | "loopback-server" | "https-egress";
 
@@ -8,12 +10,32 @@ export interface ProcessSandboxSpec {
   readonly readPaths: readonly string[];
   readonly writePaths: readonly string[];
   readonly network: SandboxNetworkMode;
+  /** Explicit namespace server port; Linux never shares the host network. */
+  readonly loopbackPort?: number;
+  readonly workingDirectory?: string;
 }
 
 export interface SandboxedLaunch {
   readonly command: string;
   readonly args: readonly string[];
   readonly profile: string;
+  /** Private host-only launch state. Remove only after the supervised child closes. */
+  readonly cleanupPath?: string;
+}
+
+/** Linux bind mounts require existing targets. Never follow a file symlink. */
+export async function prepareLinuxSandboxFiles(paths: readonly string[]): Promise<void> {
+  if (process.platform !== "linux") return;
+  for (const value of paths) {
+    const file = await fs.open(value, fsSync.constants.O_WRONLY | fsSync.constants.O_CREAT
+      | fsSync.constants.O_NOFOLLOW | fsSync.constants.O_NONBLOCK, 0o600);
+    try {
+      const stat = await file.stat();
+      if (!stat.isFile() || stat.nlink !== 1) throw new Error(`Unsafe Linux sandbox output file: ${value}`);
+    } finally {
+      await file.close();
+    }
+  }
 }
 
 const MAC_SANDBOX_EXEC = "/usr/bin/sandbox-exec";
@@ -109,6 +131,11 @@ export function buildMacProcessSandboxProfile(
   return lines.join("\n");
 }
 
+export interface SandboxLaunchOptions {
+  readonly platform?: NodeJS.Platform;
+  readonly linuxAccepted?: boolean;
+}
+
 /**
  * Wrap a Node command in the native OS sandbox. Unsupported or unavailable
  * platforms fail closed instead of silently running generated code directly.
@@ -117,10 +144,18 @@ export async function sandboxedNodeLaunch(
   nodeExecutable: string,
   nodeArgs: readonly string[],
   spec: ProcessSandboxSpec,
+  options: SandboxLaunchOptions = {},
 ): Promise<SandboxedLaunch> {
-  if (process.platform !== "darwin") {
+  const platform = options.platform ?? process.platform;
+  if (platform === "linux") {
+    if (!(options.linuxAccepted ?? linuxLandingAccepted())) {
+      throw new Error("Linux/WSL landing execution is awaiting acceptance (config/platform-acceptance.json)");
+    }
+    return linuxSandboxedNodeLaunch(nodeExecutable, nodeArgs, spec);
+  }
+  if (platform !== "darwin") {
     throw new Error(
-      "Generated landing-page execution requires the macOS native sandbox on this release",
+      "Generated landing-page execution requires macOS or a supported Linux sandbox; native Windows is unsupported",
     );
   }
   const sandboxStat = await fs.lstat(MAC_SANDBOX_EXEC).catch(() => undefined);

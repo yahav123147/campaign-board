@@ -26,6 +26,10 @@ async function runSetupWith(pythonVersion: string): Promise<{ code: number; out:
   await stub("claude", "exit 0");
   await stub("node", "exit 0");
   await stub("npm", 'echo "npm ci must not run when the Python gate fails" >&2; exit 99');
+  // This test is only about the Python gate: force macOS so setup.sh's Linux
+  // block (bubblewrap check) never activates. On a real Linux host with no
+  // bwrap, an unstubbed uname would let that block run the real apt-get.
+  await stub("uname", 'echo "Darwin"');
   try {
     const { stdout, stderr } = await execFileP("bash", [path.join(ROOT, "setup.sh")], {
       cwd: ROOT,

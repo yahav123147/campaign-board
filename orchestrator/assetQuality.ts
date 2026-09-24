@@ -4,6 +4,7 @@ import { constants as fsConstants } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { trackChildProcess } from "./childProcessRegistry";
+import { resolvePython } from "./pythonInterpreter";
 import type { MockupRenderReceipt } from "@/types";
 import {
   MAX_ASSET_COUNT,
@@ -241,8 +242,11 @@ interface PythonResult {
 }
 
 async function runPython(args: string[], input?: Buffer): Promise<PythonResult> {
+  // The venv setup.sh built, never PATH's python3: on a clean machine the
+  // latter has no Pillow and every checker would fail at import.
+  const python = await resolvePython();
   return new Promise((resolve) => {
-    const child = spawn("python3", args, {
+    const child = spawn(python, args, {
       cwd: process.cwd(),
       env: process.env,
       stdio: [input ? "pipe" : "ignore", "pipe", "pipe"],

@@ -1,4 +1,5 @@
 import path from "node:path";
+import os from "node:os";
 import { describe, expect, it } from "vitest";
 import { buildAssetSandboxSettings } from "@/orchestrator/runStage5Assets";
 
@@ -27,12 +28,16 @@ describe("Stage 5 asset sandbox", () => {
     expect(settings.sandbox.network).toMatchObject({
       allowedDomains: ["brand.example"],
       allowAllUnixSockets: false,
+      allowLocalBinding: false,
     });
     expect(settings.sandbox.filesystem.allowRead).toEqual(expect.arrayContaining([
       path.resolve("/safe/run/assets"),
       path.resolve("/safe/references/product"),
     ]));
-    expect(settings.sandbox.filesystem.denyRead.length).toBe(1);
+    expect(settings.sandbox.filesystem.denyRead).toContain(os.homedir());
+    if (process.platform === "linux") {
+      expect(settings.sandbox.filesystem.denyRead).toEqual(expect.arrayContaining(["/mnt", "/media", "/init", "/run/WSL"]));
+    }
   });
 
   it("adds the python venv root to allowRead when pythonRoot is given", () => {

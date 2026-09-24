@@ -345,6 +345,20 @@ export async function mirrorWorkspaceRuntimeFiles(
     const ignored = await runLandingGit(baseRepository, ["check-ignore", "-q", "node_modules"], signal);
     if (ignored.code === 0) {
       await fs.symlink(await fs.realpath(baseNodeModules), worktreeNodeModules, "dir");
+      // The base ignores its node_modules *directory*; the worktree holds a
+      // symlink, and a directory-only pattern ("node_modules/") does not
+      // match a symlink. Git in the worktree is the judge: an unignored link
+      // would surface later as "unrelated uncommitted changes" at the stage 5
+      // preflight (seen on the WSL2 acceptance run with the shipped template),
+      // so fail here, with the cause, and leave nothing behind.
+      const linkIgnored = await runLandingGit(worktreePath, ["check-ignore", "-q", "node_modules"], signal);
+      if (linkIgnored.code !== 0) {
+        await fs.unlink(worktreeNodeModules).catch(() => {});
+        throw new Error(
+          "The landing workspace's .gitignore ignores node_modules only as a directory (a trailing slash). "
+          + "The run worktree links node_modules, so the pattern must be `node_modules` without the slash.",
+        );
+      }
       mirrored.push("node_modules");
     }
   }

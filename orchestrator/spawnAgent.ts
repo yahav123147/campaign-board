@@ -5,6 +5,7 @@ import {
   supervisedProcessTreeLaunch,
   trackChildProcess,
 } from "./childProcessRegistry";
+import { linuxLandingAccepted } from "./platformAcceptance";
 
 const DEFAULT_TIMEOUT_MS = 60 * 60 * 1_000;
 const TERMINATION_GRACE_MS = 5_000;
@@ -93,6 +94,22 @@ export interface SpawnAgentResult {
   durationMs: number;
 }
 
+/** Claude currently treats a missing Linux Unix-socket seccomp filter as an
+ * optional warning. Do not enable Bash agents in a client install before that
+ * boundary has been qualified through the actual WSL/Claude combination. */
+export function assertAgentToolPlatform(
+  tools: readonly string[] | undefined,
+  platform = process.platform,
+  linuxAccepted = linuxLandingAccepted(),
+): void {
+  if (platform === "win32" && tools?.includes("Bash")) {
+    throw new Error("Native Windows Bash agents are unsupported; use Ubuntu inside WSL2.");
+  }
+  if (platform === "linux" && tools?.includes("Bash") && !linuxAccepted) {
+    throw new Error("Linux/WSL Bash agents are awaiting acceptance (config/platform-acceptance.json). Use macOS for landing-page generation.");
+  }
+}
+
 export async function spawnAgent(opts: SpawnAgentOptions): Promise<SpawnAgentResult> {
   const { prompt, onToken, cwd, signal, permissionMode } = opts;
   if (signal?.aborted) throw new Error("Claude execution was aborted before it started");
@@ -100,6 +117,7 @@ export async function spawnAgent(opts: SpawnAgentOptions): Promise<SpawnAgentRes
   if (Buffer.byteLength(prompt, "utf8") > MAX_PROMPT_BYTES) {
     throw new Error("Claude prompt exceeded the 2MB safety limit");
   }
+  assertAgentToolPlatform(opts.tools);
   const start = Date.now();
   const env = sanitizeEnv(process.env);
   const timeoutMs = resolvedAgentTimeoutMs(opts.timeoutMs);

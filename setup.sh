@@ -4,11 +4,9 @@ set -euo pipefail
 
 echo "== Campaign Council setup =="
 
-if [[ "$(uname)" != "Darwin" ]]; then
-  echo "אזהרה: הזרימה המלאה (שלב 5, שלב 8) נתמכת ב-macOS בלבד."
-fi
-
 command -v node >/dev/null || { echo "חסר Node.js 20.9+. התקינו מ-nodejs.org ואז הריצו שוב."; exit 1; }
+command -v npm >/dev/null || { echo "חסר npm 9+. התקינו Node.js עם npm ואז הריצו שוב."; exit 1; }
+command -v git >/dev/null || { echo "חסר Git ליצירת סביבת דפי הנחיתה."; exit 1; }
 command -v python3 >/dev/null || { echo "חסר Python 3.10+."; exit 1; }
 # A stock Mac ships python3 3.9.6, and the pinned numpy needs 3.10+: without
 # this gate the install got past every check and died inside pip.
@@ -22,11 +20,33 @@ if [[ -z "$PY_MAJOR" || -z "$PY_MINOR" ]] || (( PY_MAJOR < 3 || (PY_MAJOR == 3 &
 fi
 command -v claude >/dev/null || { echo "חסר Claude Code CLI. התקינו והריצו: claude auth login (מנוי MAX)."; exit 1; }
 
+if [[ "$(uname)" == "Linux" ]]; then
+  if grep -qi microsoft /proc/sys/kernel/osrelease 2>/dev/null && [[ "$PWD" == /mnt/* ]]; then
+    echo "ב-WSL2 הפרויקט חייב לשבת בתוך מערכת הקבצים של לינוקס (למשל ~/campaign-board), לא תחת /mnt."
+    echo "העתיקו: cp -r \"$PWD\" ~/campaign-board && cd ~/campaign-board && ./setup.sh"
+    exit 1
+  fi
+  if ! command -v bwrap >/dev/null; then
+    if command -v sudo >/dev/null && command -v apt-get >/dev/null; then
+      echo "-- מתקין bubblewrap (ארגז החול לבניית דפים)..."
+      sudo apt-get install -y bubblewrap
+    else
+      echo "חסר bubblewrap. התקינו: sudo apt-get install -y bubblewrap ואז הריצו שוב."
+      exit 1
+    fi
+  fi
+fi
+
 echo "-- מתקין תלויות Node..."
 npm ci
 
 echo "-- מתקין Chromium ל-Playwright..."
-npx playwright install chromium
+if [[ "$(uname)" == "Linux" ]]; then
+  # Installs Chromium system libraries too (Ubuntu/WSL2; may ask for sudo).
+  npx playwright install --with-deps chromium
+else
+  npx playwright install chromium
+fi
 
 echo "-- מקים סביבת Python לכלי התמונות..."
 python3 -m venv "$HOME/.campaign-council-venv"
@@ -35,36 +55,18 @@ source "$HOME/.campaign-council-venv/bin/activate"
 python3 -m pip install --quiet --upgrade pip
 python3 -m pip install --quiet -r requirements-image-core.txt
 
-if [[ ! -f .env.local ]]; then
-  cp .env.example .env.local
-  echo "-- נוצר .env.local מהתבנית. ערכו אותו לפי ה-README."
+if [[ -e .env.local || -L .env.local ]]; then
+  echo "-- .env.local קיים; ההגדרות והפרופיל הקיימים נשמרו."
+else
+  echo "-- הגדרת לקוח וסביבת דפי נחיתה פרטית..."
+  node scripts/configure-client.mjs "$@"
 fi
-
-CONFIG_DIR="$HOME/.config/campaign-council"
-mkdir -p "$CONFIG_DIR"
-for f in copy-standard ads-standard creative-standard; do
-  if [[ ! -f "$CONFIG_DIR/$f.md" ]]; then
-    cp "config/standards/$f.default.md" "$CONFIG_DIR/$f.md"
-    echo "-- הותקן תקן ברירת מחדל: $CONFIG_DIR/$f.md"
-  fi
-done
-if [[ ! -f "$CONFIG_DIR/client-profile.json" ]]; then
-  cp config/client-profile.example.json "$CONFIG_DIR/client-profile.json"
-  chmod 600 "$CONFIG_DIR/client-profile.json"
-  echo "-- נוצר פרופיל לקוח לדוגמה: $CONFIG_DIR/client-profile.json. מלאו אותו לפי ה-README."
-fi
-
-mkdir -p "$CONFIG_DIR/page-types"
-for f in premium-lead-page webinar-page squeeze-page upsell-page; do
-  if [[ ! -f "$CONFIG_DIR/page-types/$f.md" ]]; then
-    cp "config/standards/page-types/$f.default.md" "$CONFIG_DIR/page-types/$f.md"
-    echo "-- הותקנה תבנית סוג דף: $CONFIG_DIR/page-types/$f.md"
-  fi
-done
 
 echo ""
 echo "== בדיקת בריאות =="
-npm run doctor || true
+if ! npm run doctor; then
+  echo "ההתקנה הסתיימה, אך המערכת עדיין אינה מוכנה לריצה. השלימו את ההגדרות והחסימות בדוח והריצו npm run doctor שוב."
+fi
 
 echo ""
-echo "הצעדים הבאים: ערכו את $CONFIG_DIR/client-profile.json ואת .env.local (כולל CAMPAIGN_COUNCIL_CLIENT_PROFILE=$CONFIG_DIR/client-profile.json), התקינו את סקיל העיצוב לפי vendor/landing-skill/INSTALL.md אם שלב 5 פעיל, ואז: npm run dev"
+echo "השלימו את החסימות בדוח doctor, ואז: npm run dev. הפרופיל והתיקיות המדויקות הוצגו בתהליך ההגדרה."

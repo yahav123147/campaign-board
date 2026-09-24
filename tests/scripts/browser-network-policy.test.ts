@@ -42,3 +42,22 @@ describe("browser network policy", () => {
     );
   });
 });
+
+describe("the shipped landing template stays inside the preview render policy", () => {
+  // WSL2 acceptance run 35850777432: globals.css loaded /fonts/Heebo.ttf, the
+  // render policy blocked it as outside-preview-route, and stage 5.3 failed
+  // on every page built from the template. Assets the template itself loads
+  // must come through the bundler (/_next/static) or the page's own route.
+  it("loads its font through a relative url the bundler serves, never an absolute path", async () => {
+    const root = new URL("http://127.0.0.1:4322/council-example-page");
+    const fs = await import("node:fs/promises");
+    const path = await import("node:path");
+    const css = await fs.readFile(path.join(process.cwd(), "templates", "landing", "src", "app", "globals.css"), "utf8");
+    const urls = [...css.matchAll(/url\(\s*["']?([^"')]+)["']?\s*\)/g)].map((match) => match[1]);
+    expect(urls.length).toBeGreaterThan(0);
+    for (const url of urls) {
+      expect(url.startsWith("/")).toBe(false);
+      expect(classifyBrowserRequest(`http://127.0.0.1:4322/_next/static/media/${path.basename(url)}`, root, { restrictToRoute: true })).toEqual({ allowed: true });
+    }
+  });
+});

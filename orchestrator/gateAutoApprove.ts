@@ -38,7 +38,9 @@ import type { Run } from "@/types";
  */
 const HUMAN_GATES = new Set(["4e", "5.2", "5.4", "7", "7.5", "8", "9"]);
 
-const PORT = process.env.PORT?.trim() || "4321";
+// Next.js publishes the bound port in PORT before loading the application.
+// Keep the fallback aligned with next dev/start for isolated callers too.
+const PORT = process.env.PORT?.trim() || "3000";
 const BASE_URL = `http://127.0.0.1:${PORT}`;
 const REQUEST_HEADERS = {
   "Content-Type": "application/json",

@@ -121,7 +121,7 @@ export function BriefInput() {
         </div>
       </fieldset>
 
-      <label className="block mb-3 text-sm" style={{ color: "var(--color-ink-muted)" }}>על איזה קמפיין מתייעצים?</label>
+      <label className="block mb-3 text-sm" style={{ color: "var(--color-ink-muted)" }}>{pipeline === "direct" ? "מה צריך לדעת כדי לבנות את הדף?" : "על איזה קמפיין מתייעצים?"}</label>
       <textarea
         value={brief}
         onChange={(e) => setBrief(e.target.value)}
@@ -159,7 +159,9 @@ export function BriefInput() {
         className="mt-6 w-full font-medium py-3.5 rounded-md transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
         style={{ background: "var(--color-accent)", color: "white" }}
       >
-        {submitting ? "מתחיל דיון…" : "התחל דיון"}
+        {pipeline === "direct"
+          ? (submitting ? "מתחיל לבנות את הדף…" : "צור דף נחיתה")
+          : (submitting ? "מתחיל דיון…" : "התחל דיון")}
       </button>
 
       <p className="mt-6 text-center text-sm">

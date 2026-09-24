@@ -196,6 +196,23 @@ async function expectTreeDead(fixture: Fixture): Promise<void> {
 }
 
 describe("startSupervisedChrome", () => {
+  it("launches an explicitly selected mockup browser when the signed-in Chrome is unavailable", async () => {
+    process.env.CAMPAIGN_COUNCIL_CHROME_PATH = path.join(workDir, "missing-google-chrome");
+    const chrome = await startSupervisedChrome({
+      profileDir,
+      executablePath: fakeChrome,
+      headless: true,
+      deadline: Date.now() + 15_000,
+      label: "chrome (mockups)",
+    });
+    const fixture = await readFixture();
+    expect(fixture.executable).toBe(fakeChrome);
+    expect(fixture.flags).toContain("--headless");
+    expect(fixture.flags).toContain(`--user-data-dir=${profileDir}`);
+    await chrome.closeAndWait();
+    await expectTreeDead(fixture);
+  }, 30_000);
+
   it("launches the Chrome executable itself and reaps the whole tree on closeAndWait", async () => {
     const chrome = await startSupervisedChrome({ profileDir, deadline: Date.now() + 15_000 });
     const fixture = await readFixture();
@@ -206,6 +223,7 @@ describe("startSupervisedChrome", () => {
     expect(fixture.flags).toContain("--remote-debugging-address=127.0.0.1");
     expect(fixture.flags).toContain("--remote-debugging-port=0");
     expect(fixture.flags).toContain("--no-first-run");
+    expect(fixture.flags).not.toContain("--headless");
     expect(chrome.endpoint).toBe(`http://127.0.0.1:${fixture.port}`);
     expect(alive(fixture.chromePid) && alive(fixture.childPid)).toBe(true);
 

@@ -144,9 +144,13 @@ export async function startSupervisedChrome(args: {
   deadline: number;
   /** How the supervisor is named in the registry, for the operator's sake. */
   label?: string;
+  /** Local mockups may use Playwright Chromium without a signed-in Chrome. */
+  executablePath?: string;
+  /** Empty-session local mockups do not need a desktop display. */
+  headless?: boolean;
 }): Promise<OwnedChrome> {
   if (args.signal?.aborted) throw new Error("הפעלת הדפדפן בוטלה");
-  const executable = chromeExecutablePath();
+  const executable = args.executablePath ?? chromeExecutablePath();
   await fs.access(executable, fsConstants.X_OK).catch(() => {
     throw new Error(`לא נמצא דפדפן כרום להרצה ב-${executable}`);
   });
@@ -159,6 +163,7 @@ export async function startSupervisedChrome(args: {
       "--remote-debugging-port=0",
       "--no-first-run",
       "--no-default-browser-check",
+      ...(args.headless ? ["--headless"] : []),
     ],
     process.cwd(),
     args.label ?? "chrome (live proof)",

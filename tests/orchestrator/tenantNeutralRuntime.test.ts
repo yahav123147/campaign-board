@@ -94,15 +94,11 @@ describe("tenant-neutral runtime prompts and UI", () => {
     expect(source).toContain("אין גישה אוטומטית");
   });
 
-  // F2: this test file ships in the client archive, so it must pass the same
-  // privacy scanner the packaging step runs, and must not spell out any
-  // explicit tenant string literally either.
+  // The tests and scanner also ship. Keep them under the same content check.
   it("is itself clean enough to ship in the client archive", () => {
-    const source = fs.readFileSync(path.join(ROOT, THIS_FILE), "utf8");
-
-    expect(clientContentViolation(source)).toBeUndefined();
-    for (const forbidden of EXPLICIT_TENANT_STRINGS) {
-      expect(source.toLowerCase()).not.toContain(forbidden.toLowerCase());
+    for (const file of [THIS_FILE, "tests/config/criticDefaults.test.ts", "tests/scripts/package-client.test.ts", "scripts/package-client.mjs"]) {
+      const source = fs.readFileSync(path.join(ROOT, file), "utf8");
+      expect(clientContentViolation(source), file).toBeUndefined();
     }
   });
 });

@@ -23,6 +23,11 @@ vi.mock("@/orchestrator/loadAgents", () => ({
   }]),
 }));
 
+vi.mock("@/orchestrator/imageSystemTools", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/orchestrator/imageSystemTools")>()),
+  availableImageSystemTools: vi.fn(async () => ["/usr/bin/cwebp"]),
+}));
+
 // Only the file-system asset bookkeeping is stubbed: this test is about what
 // the stage 5.2 prompt carries, not about validating image folders.
 vi.mock("@/orchestrator/assetQuality", async (importOriginal) => ({
@@ -162,7 +167,8 @@ describe("the stage 5.2 asset prompt", () => {
     expect(prompt).not.toContain("אין דפדפן");
     // The interpreter and the system converters stay for both pipelines.
     expect(prompt).toContain("כולל Pillow ו-certifi");
-    expect(prompt).toContain("/usr/bin/sips");
+    expect(prompt).toContain("/usr/bin/cwebp");
+    expect(prompt).not.toContain("/usr/bin/sips");
   });
 
   // Task 17: the render contract is not a direct-pipeline note. A council run

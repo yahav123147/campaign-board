@@ -300,11 +300,43 @@ describe("mirrorWorkspaceRuntimeFiles", () => {
     await fs.mkdir(path.join(base, "node_modules"));
     await fs.writeFile(path.join(base, ".env.local"), "SECRET=1\n");
     await fs.writeFile(path.join(base, ".env.example"), "SECRET=\n");
+    // The real target is a git worktree of the base and carries its .gitignore.
+    execFileSync("git", ["init", "-q"], { cwd: wt });
+    await fs.copyFile(path.join(base, ".gitignore"), path.join(wt, ".gitignore"));
     const mirrored = await mirrorWorkspaceRuntimeFiles(base, wt);
     expect(mirrored.sort()).toEqual([".env.local", "node_modules"]);
     expect((await fs.lstat(path.join(wt, "node_modules"))).isSymbolicLink()).toBe(true);
     expect(await fs.readFile(path.join(wt, ".env.local"), "utf8")).toBe("SECRET=1\n");
     await expect(fs.lstat(path.join(wt, ".env.example"))).rejects.toThrow();
     expect(await mirrorWorkspaceRuntimeFiles(base, wt)).toEqual([]);
+  });
+
+  it("refuses a directory-only node_modules pattern, naming the cause, and leaves no link behind", async () => {
+    // WSL2 acceptance run 35759101651: the shipped template ignored
+    // "node_modules/" (directories only); the worktree's symlink was not
+    // ignored and stage 5.3 stopped with "unrelated uncommitted changes".
+    const fs = await import("node:fs/promises");
+    const os = await import("node:os");
+    const path = await import("node:path");
+    const { execFileSync } = await import("node:child_process");
+    const { mirrorWorkspaceRuntimeFiles } = await import("@/orchestrator/landingWorktree");
+    const base = await fs.mkdtemp(path.join(os.tmpdir(), "lw-base-"));
+    const wt = await fs.mkdtemp(path.join(os.tmpdir(), "lw-wt-"));
+    execFileSync("git", ["init", "-q"], { cwd: base });
+    execFileSync("git", ["init", "-q"], { cwd: wt });
+    await fs.writeFile(path.join(base, ".gitignore"), "node_modules/\n");
+    await fs.copyFile(path.join(base, ".gitignore"), path.join(wt, ".gitignore"));
+    await fs.mkdir(path.join(base, "node_modules"));
+    await expect(mirrorWorkspaceRuntimeFiles(base, wt)).rejects.toThrow(/trailing slash/);
+    await expect(fs.lstat(path.join(wt, "node_modules"))).rejects.toThrow();
+  });
+
+  it("ships a landing template whose .gitignore also covers the worktree's node_modules link", async () => {
+    const fs = await import("node:fs/promises");
+    const path = await import("node:path");
+    const ignore = await fs.readFile(path.join(process.cwd(), "templates", "landing", ".gitignore"), "utf8");
+    const lines = ignore.split("\n").map((line) => line.trim());
+    expect(lines).toContain("node_modules");
+    expect(lines).not.toContain("node_modules/");
   });
 });

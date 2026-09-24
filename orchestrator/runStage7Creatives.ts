@@ -27,6 +27,7 @@ import { agentTimeoutMs } from "./executionService";
 import type { ExecutionControl } from "./executionService";
 import { loadClientProfile } from "@/config/clientProfile";
 import { readCreativeStandard, renderCopyStandard } from "./copyStandard";
+import { readSecret } from "./secretStore";
 import { CREATIVE_MODE_CHOICE_MARKER, RUNNER_FEEDBACK_SENTINELS, type CreativeMode } from "@/lib/creativeMode";
 
 const execFileAsync = promisify(execFile);
@@ -192,29 +193,10 @@ export function assertPlanEntry(entry: CreativePlanEntry, presenterPhotos: strin
 }
 
 /** The image venv from setup.sh when present; otherwise whatever python3 the server sees. */
-export async function resolvePython(): Promise<string> {
-  const venvPython = path.join(os.homedir(), ".campaign-council-venv", "bin", "python3");
-  try {
-    await fs.access(venvPython);
-    return venvPython;
-  } catch {
-    return "python3";
-  }
-}
-
-async function readKeychainSecret(service: string): Promise<string> {
-  if (process.platform !== "darwin") {
-    throw new Error("קריאת מפתח OpenAI נתמכת כרגע רק ב-macOS Keychain");
-  }
-  const { stdout } = await execFileAsync(
-    "/usr/bin/security",
-    ["find-generic-password", "-s", service, "-w"],
-    { timeout: 15_000 },
-  );
-  const secret = stdout.trim();
-  if (!secret) throw new Error(`ה-Keychain לא החזיר מפתח עבור השירות ${service}`);
-  return secret;
-}
+// The resolver lives in its own module so assetQuality (which this file
+// imports) can use it without a cycle; callers keep importing it from here.
+import { resolvePython } from "./pythonInterpreter";
+export { resolvePython };
 
 export async function listPresenterPhotos(dir: string | undefined): Promise<string[]> {
   if (!dir) return [];
@@ -455,7 +437,7 @@ ${effectiveMode === "ai-variation" ? 'דוגמה למצב variation (שני הש
     await fs.mkdir(workDir, { recursive: true, mode: 0o700 });
 
     const attemptId = randomUUID();
-    const apiKey = await readKeychainSecret(keychainService);
+    const apiKey = await readSecret(keychainService);
     const repoRoot = process.cwd();
 
     for (const entry of plan.creatives) {

@@ -1,5 +1,4 @@
-import { spawn } from "node:child_process";
-import { trackChildProcess } from "./childProcessRegistry";
+import { readSecret } from "./secretStore";
 import type { ClientProfile } from "@/config/clientProfile";
 import { appendLog, saveRunArtifact } from "@/lib/runStore";
 import type { ExecutionControl } from "./executionService";
@@ -12,9 +11,7 @@ export { stage8ReportSha256 } from "./stage89Safety";
 
 const DEFAULT_GRAPH_API_VERSION = "v26.0";
 const GRAPH_TIMEOUT_MS = 20_000;
-const KEYCHAIN_TIMEOUT_MS = 10_000;
 const MAX_GRAPH_RESPONSE_BYTES = 512 * 1024;
-const MAX_TOKEN_BYTES = 16 * 1024;
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1_000;
 
 type JsonRecord = Record<string, unknown>;
@@ -478,78 +475,8 @@ export async function getGraphJson(
   }
 }
 
-async function readKeychainToken(service: string, signal?: AbortSignal): Promise<string> {
-  signal?.throwIfAborted();
-  if (process.platform !== "darwin") {
-    throw new Error("Meta token loading currently supports macOS Keychain only.");
-  }
-
-  return new Promise((resolve, reject) => {
-    const proc = spawn("security", ["find-generic-password", "-s", service, "-w"], {
-      stdio: ["ignore", "pipe", "pipe"],
-      env: {
-        PATH: process.env.PATH,
-        HOME: process.env.HOME,
-        LANG: process.env.LANG,
-        NODE_ENV: process.env.NODE_ENV,
-      },
-    });
-    trackChildProcess(proc, "keychain-read");
-    let stdout = Buffer.alloc(0);
-    let settled = false;
-    let terminationError: Error | undefined;
-    let forceKill: NodeJS.Timeout | undefined;
-    const finish = (error?: Error, token?: string) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeout);
-      if (forceKill) clearTimeout(forceKill);
-      signal?.removeEventListener("abort", onAbort);
-      if (error) reject(error);
-      else resolve(token!);
-    };
-    const terminate = (error: Error) => {
-      if (terminationError) return;
-      terminationError = error;
-      proc.kill("SIGTERM");
-      forceKill = setTimeout(() => proc.kill("SIGKILL"), 2_000);
-      forceKill.unref();
-    };
-    const onAbort = () => terminate(new Error("Meta token read was aborted"));
-    const timeout = setTimeout(
-      () => terminate(new Error("Meta token read timed out")),
-      KEYCHAIN_TIMEOUT_MS,
-    );
-    timeout.unref();
-    signal?.addEventListener("abort", onAbort, { once: true });
-
-    proc.stdout.on("data", (chunk: Buffer) => {
-      if (stdout.length + chunk.length > MAX_TOKEN_BYTES) {
-        terminate(new Error("Meta token exceeded the safety limit"));
-        return;
-      }
-      stdout = Buffer.concat([stdout, chunk]);
-    });
-    proc.stderr.resume();
-    proc.on("error", (error) => finish(error));
-    proc.on("close", (code) => {
-      if (settled) return;
-      if (terminationError) {
-        finish(terminationError);
-        return;
-      }
-      const token = stdout.toString("utf-8").trim();
-      if (code !== 0 || !token) {
-        finish(new Error(`Meta token is unavailable in Keychain service '${service}'.`));
-        return;
-      }
-      finish(undefined, token);
-    });
-  });
-}
-
 const DEFAULT_DEPENDENCIES: Stage8ReadDependencies = {
-  readToken: readKeychainToken,
+  readToken: readSecret,
   getJson: getGraphJson,
 };
 

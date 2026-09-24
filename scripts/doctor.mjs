@@ -14,9 +14,10 @@ import { constants as fsConstants, existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import net from "node:net";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { mockupBrowserExecutablePath } from "./browser-executable.mjs";
 
 const execFileAsync = promisify(execFile);
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
@@ -40,6 +41,7 @@ const RELEVANT_ENV_KEYS = new Set([
   "CAMPAIGN_COUNCIL_CLIENT_PROFILE",
   "CAMPAIGN_COUNCIL_USE_DEVELOPMENT_PROFILE",
   "CAMPAIGN_COUNCIL_DATA_DIR",
+  "CAMPAIGN_COUNCIL_CHROME_PATH",
   "RUNS_DIR_OVERRIDE",
   "RUNS_LEGACY_DIR_OVERRIDE",
   "LANDING_PAGES_DIR",
@@ -156,7 +158,7 @@ export function processTreePlatformCheck(platform = process.platform) {
       title: "Process-tree cleanup",
       status: "fail",
       summary: "Windows process execution is disabled because this release has no Job Object reaper.",
-      action: "Run Campaign Council on macOS, or add and validate a Windows Job Object implementation before enabling agents.",
+      action: "Run Campaign Council on macOS or Ubuntu inside WSL2; native Windows has no Job Object reaper in this release.",
     });
   }
   return doctorCheck({
@@ -274,9 +276,10 @@ export function formatDoctorReport(checks) {
 /**
  * @param {string} file
  * @param {string[]} args
- * @param {{ cwd?: string, env?: NodeJS.ProcessEnv, timeout?: number }=} options
+ * @param {{ cwd?: string, env?: NodeJS.ProcessEnv, timeout?: number, discardStdout?: boolean }=} options
  */
 async function runCommand(file, args, options = {}) {
+  if (options.discardStdout) return runCommandDiscardingStdout(file, args, options);
   try {
     const result = await execFileAsync(file, args, {
       cwd: options.cwd,
@@ -296,6 +299,53 @@ async function runCommand(file, args, options = {}) {
       code: value.code ?? -1,
     };
   }
+}
+
+/**
+ * Like runCommand, but the child's stdout file descriptor is "ignore" at
+ * spawn time. execFile always buffers stdout into memory for the caller to
+ * read even when unused; a probe whose command can print a secret (Linux's
+ * secret-tool "lookup", reused as an existence check) must never let that
+ * value exist as a string inside this process at all, not merely go unread.
+ * The exit code alone answers "does the item exist".
+ *
+ * @param {string} file
+ * @param {string[]} args
+ * @param {{ cwd?: string, env?: NodeJS.ProcessEnv, timeout?: number }} options
+ */
+function runCommandDiscardingStdout(file, args, options) {
+  return new Promise((resolve) => {
+    let child;
+    try {
+      child = spawn(file, args, {
+        cwd: options.cwd,
+        env: options.env,
+        stdio: ["ignore", "ignore", "pipe"],
+        windowsHide: true,
+      });
+    } catch {
+      resolve({ ok: false, stdout: "", stderr: "", code: -1 });
+      return;
+    }
+    let stderr = "";
+    let settled = false;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(result);
+    };
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      finish({ ok: false, stdout: "", stderr, code: -1 });
+    }, options.timeout ?? 10_000);
+    timer.unref?.();
+    child.stderr?.on("data", (chunk) => {
+      if (stderr.length < 8 * 1024) stderr += chunk.toString("utf8");
+    });
+    child.on("error", () => finish({ ok: false, stdout: "", stderr, code: -1 }));
+    child.on("close", (code) => finish({ ok: code === 0, stdout: "", stderr, code: code ?? -1 }));
+  });
 }
 
 /** @param {string} root */
@@ -550,6 +600,29 @@ async function playwrightCheck() {
         ? "The Playwright package is not installed."
         : "The Playwright package exists, but its Chromium executable is unavailable.",
       action: packageMissing ? "Run npm install." : "Run npx playwright install chromium.",
+    });
+  }
+}
+
+/** Inspect the same executable the renderer chooses, without launching it. */
+export async function mockupBrowserCheck(readiness, effectiveEnv = {}, resolveBrowser = mockupBrowserExecutablePath) {
+  try {
+    const executable = await resolveBrowser({ chromePath: effectiveEnv.CAMPAIGN_COUNCIL_CHROME_PATH });
+    return doctorCheck({
+      id: "mockup-browser",
+      title: "Device mockup browser",
+      status: "pass",
+      summary: `The renderer's browser is installed and executable: ${executable}.`,
+    });
+  } catch {
+    return doctorCheck({
+      id: "mockup-browser",
+      title: "Device mockup browser",
+      status: readiness?.stage5?.enabled ? "fail" : "warn",
+      summary: "The browser used to render device mockups is unavailable.",
+      action: effectiveEnv.CAMPAIGN_COUNCIL_CHROME_PATH
+        ? "Correct or remove CAMPAIGN_COUNCIL_CHROME_PATH, then rerun the doctor."
+        : "Run npx playwright install chromium, then rerun the doctor.",
     });
   }
 }
@@ -1073,7 +1146,7 @@ async function portChecks(effectiveEnv) {
       title: "Loopback ports",
       status: "fail",
       summary: /** @type {Error} */ (error).message,
-      action: "Set valid, different loopback ports in .env.local.",
+      action: "Set PORT in the launching shell and PREVIEW_PORT in .env.local to valid, different loopback ports.",
     })];
   }
   if (appPort === previewPort) {
@@ -1103,7 +1176,7 @@ async function portChecks(effectiveEnv) {
         title: "App loopback port",
         status: "warn",
         summary: `127.0.0.1:${appPort} is already in use.`,
-        action: "Stop the existing local service or set PORT to another unreserved port.",
+        action: "Stop the existing local service or choose another unreserved shell PORT for both doctor and dev/start.",
       }));
   checks.push(previewAvailable
     ? doctorCheck({
@@ -1123,18 +1196,24 @@ async function portChecks(effectiveEnv) {
 }
 
 /**
- * Load config/clientProfile.ts as an ES module without a build step.
+ * Load a TypeScript module under the repo root as an ES module without a
+ * build step, given its root-relative specifier (e.g. "config/clientProfile",
+ * "orchestrator/secretStore").
  *
  * Each file is transpiled and imported as a data: URL. A data: URL module has
- * no directory, so the repository's "@/..." alias cannot resolve from inside
- * it: every remaining "@/x" specifier (type-only imports are already erased)
- * is compiled the same way and its data: URL spliced in before import. Until
- * the validator gained a value import from "@/types" this never came up, and
- * the doctor then reported "could not be loaded" on every correct install.
+ * no directory, so neither the repository's "@/..." alias nor a plain "./x"
+ * or "../x" relative import can resolve from inside it: every remaining
+ * such specifier (type-only imports are already erased) is compiled the same
+ * way and its data: URL spliced in before import. Until the validator gained
+ * a value import from "@/types" this never came up, and the doctor then
+ * reported "could not be loaded" on every correct install; the secret store
+ * module's own relative import of its child-process registry needed the same
+ * treatment extended to "./x"/"../x".
  *
  * @param {string} root
+ * @param {string} specifier
  */
-export async function importCanonicalClientProfile(root) {
+export async function importTypeScriptModule(root, specifier) {
   const typescriptImport = await import("typescript");
   const typescript = typescriptImport.default ?? typescriptImport;
   /** @type {Map<string, Promise<string>>} */
@@ -1146,7 +1225,20 @@ export async function importCanonicalClientProfile(root) {
       const file = path.join(root, candidate);
       if (await fs.access(file).then(() => true, () => false)) return file;
     }
-    throw new Error(`Cannot resolve "@/${specifier}" from ${root}`);
+    throw new Error(`Cannot resolve module "${specifier}" from ${root}`);
+  }
+
+  /**
+   * A module's own "./x" and "../x" imports are relative to that module's
+   * directory, not to root — e.g. orchestrator/secretStore.ts importing
+   * "./childProcessRegistry" means orchestrator/childProcessRegistry.
+   *
+   * @param {string} fromSpecifier the importing module's root-relative specifier
+   * @param {string} raw the import text exactly as written: "@/x" or "./x"/"../x"
+   */
+  function resolveImportSpecifier(fromSpecifier, raw) {
+    if (raw.startsWith("@/")) return raw.slice(2);
+    return path.posix.normalize(path.posix.join(path.posix.dirname(fromSpecifier), raw));
   }
 
   /** @param {string} specifier */
@@ -1162,10 +1254,13 @@ export async function importCanonicalClientProfile(root) {
             sourceMap: false,
           },
         }).outputText;
-        const aliased = new Set([...output.matchAll(/from\s+["']@\/([^"']+)["']/g)].map((m) => m[1]));
-        for (const inner of aliased) {
+        const imported = new Set(
+          [...output.matchAll(/from\s+["'](@\/[^"']+|\.\.?\/[^"']+)["']/g)].map((m) => m[1]),
+        );
+        for (const raw of imported) {
+          const inner = resolveImportSpecifier(specifier, raw);
           const url = JSON.stringify(await moduleUrlFor(inner));
-          output = output.replaceAll(`"@/${inner}"`, url).replaceAll(`'@/${inner}'`, url);
+          output = output.replaceAll(`"${raw}"`, url).replaceAll(`'${raw}'`, url);
         }
         return `data:text/javascript;base64,${Buffer.from(output).toString("base64")}`;
       })();
@@ -1174,7 +1269,76 @@ export async function importCanonicalClientProfile(root) {
     return pending;
   }
 
-  return import(await moduleUrlFor(path.join("config", "clientProfile")));
+  return import(await moduleUrlFor(specifier));
+}
+
+/** @param {string} root */
+export async function importCanonicalClientProfile(root) {
+  return importTypeScriptModule(root, path.join("config", "clientProfile"));
+}
+
+/**
+ * Prove the Linux sandbox on this host by running a script inside it: a write
+ * into the declared write path must succeed, and /etc must not be visible.
+ * Existence of /usr/bin/bwrap proves nothing; user namespaces can be off.
+ * @param {string} root
+ * @param {{ launch?: typeof import("../orchestrator/linuxProcessSandbox").linuxSandboxedNodeLaunch; timeoutMs?: number }=} deps
+ *   `deps.launch` is injectable for tests; it defaults to the real
+ *   `linuxSandboxedNodeLaunch`, loaded lazily so tests never need bwrap.
+ *   `deps.timeoutMs` defaults to 30s.
+ * @returns {Promise<{ ok: boolean; detail: string }>}
+ */
+export async function probeLinuxSandbox(root, deps = {}) {
+  const timeoutMs = deps.timeoutMs ?? 30_000;
+  const launchFn = deps.launch
+    ?? (await importTypeScriptModule(root, "orchestrator/linuxProcessSandbox")).linuxSandboxedNodeLaunch;
+  const probeDir = await fs.mkdtemp(path.join(os.tmpdir(), "council-doctor-sandbox-"));
+  const out = path.join(probeDir, "out");
+  await fs.mkdir(out, { mode: 0o700 });
+  const script = path.join(probeDir, "probe.js");
+  await fs.writeFile(script, [
+    "const fs = require('fs');",
+    "let wrote = false, hidden = false;",
+    `try { fs.writeFileSync(${JSON.stringify(path.join(out, "ok.txt"))}, '1'); wrote = true; } catch {}`,
+    "try { fs.readFileSync('/etc/passwd'); } catch { hidden = true; }",
+    'process.stdout.write(JSON.stringify({ wrote, hidden }) + "\\n", () => process.exit(wrote && hidden ? 0 : 1));',
+  ].join("\n"));
+  let launch;
+  try {
+    launch = await launchFn(process.execPath, [script], {
+      readPaths: [probeDir], writePaths: [out], network: "none", workingDirectory: probeDir,
+    });
+    return await new Promise((resolve) => {
+      const child = spawn(launch.command, launch.args, { stdio: ["ignore", "pipe", "pipe"], env: { PATH: "/usr/local/bin:/usr/bin:/bin", HOME: out, TMPDIR: out } });
+      let output = "";
+      let settled = false;
+      child.stdout.on("data", (chunk) => { output += chunk; });
+      child.stderr.on("data", (chunk) => { output += chunk; });
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        child.kill("SIGKILL");
+        resolve({ ok: false, detail: `sandbox probe timed out: ${output.trim()}` });
+      }, timeoutMs);
+      child.on("error", (error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve({ ok: false, detail: error.message });
+      });
+      child.on("close", (code) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve({ ok: code === 0, detail: output.trim() });
+      });
+    });
+  } catch (error) {
+    return { ok: false, detail: error instanceof Error ? error.message : String(error) };
+  } finally {
+    if (launch?.cleanupPath) await fs.rm(launch.cleanupPath, { recursive: true, force: true });
+    await fs.rm(probeDir, { recursive: true, force: true });
+  }
 }
 
 /** @param {string} root @param {Record<string, string>} effectiveEnv */
@@ -1335,25 +1499,42 @@ export async function pageTypesCheck(profile, effectiveEnv, root = DEFAULT_ROOT)
 }
 
 /**
- * Stage 5 executes generated Next.js code inside the native macOS Seatbelt
- * sandbox. There is deliberately no unsandboxed fallback on other platforms.
+ * Stage 5 executes generated Next.js code inside a native sandbox: the macOS
+ * Seatbelt sandbox on Darwin, bubblewrap on Linux (including WSL2). There is
+ * deliberately no unsandboxed fallback on any other platform.
  *
  * @param {any} readiness
  * @param {string=} platform
+ * @param {{ probe?: () => Promise<{ ok: boolean; detail: string }> }=} deps injectable for tests; defaults to the real probe
  */
-async function stage5SandboxCheck(readiness, platform = process.platform) {
+export async function stage5SandboxCheck(readiness, platform = process.platform, deps = {}) {
   const enabled = readiness?.stage5?.enabled === true;
+  if (platform === "linux") {
+    const probe = deps.probe ?? (() => probeLinuxSandbox(DEFAULT_ROOT));
+    const result = await probe();
+    return doctorCheck({
+      id: "stage5-native-sandbox",
+      title: "Stage 5 sandbox (bubblewrap)",
+      status: result.ok ? "pass" : (enabled ? "fail" : "warn"),
+      summary: result.ok
+        ? "A probe ran inside the Linux sandbox: the declared write path was writable and /etc was hidden."
+        : `The Linux sandbox probe failed: ${result.detail}`,
+      action: result.ok
+        ? "None."
+        : "Install bubblewrap (sudo apt-get install bubblewrap) and confirm unprivileged user namespaces are enabled (sysctl kernel.unprivileged_userns_clone). On WSL2, run inside the Linux filesystem, not under /mnt.",
+    });
+  }
   if (platform !== "darwin") {
     return doctorCheck({
       id: "stage5-native-sandbox",
       title: "Stage 5 native sandbox",
       status: macOnlyCapabilityStatus(platform, enabled),
       summary: enabled
-        ? "Stage 5 is enabled, but generated landing-page execution is supported only on macOS in this release."
+        ? "Stage 5 is enabled, but generated landing-page execution is supported only on macOS or Ubuntu inside WSL2."
         : "Stage 5 generated-code execution is unavailable on this operating system and remains disabled.",
       action: enabled
-        ? "Run the full Stage 5 workflow on macOS, or disable policies.capabilities.landingPageBuild."
-        : "Use macOS before enabling policies.capabilities.landingPageBuild.",
+        ? "Run the full Stage 5 workflow on macOS or Ubuntu inside WSL2, or disable policies.capabilities.landingPageBuild."
+        : "Use macOS or Ubuntu inside WSL2 before enabling policies.capabilities.landingPageBuild.",
     });
   }
 
@@ -1383,78 +1564,60 @@ async function stage5SandboxCheck(readiness, platform = process.platform) {
   });
 }
 
-function minimalKeychainEnvironment() {
-  const allowed = ["PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "LANG", "LC_ALL"];
-  /** @type {NodeJS.ProcessEnv} */
-  const env = {};
-  for (const key of allowed) {
-    if (process.env[key] !== undefined) env[key] = process.env[key];
-  }
-  return env;
-}
-
 /**
- * Stage 8 deliberately reads its Meta token from macOS Keychain. The lookup
- * omits -g/-w, discards command output, and therefore never asks Keychain to
- * print the secret.
+ * Stage 8 deliberately reads its Meta token from the host's own secret store
+ * (macOS Keychain, Windows Credential Manager reached from WSL2, or
+ * secret-tool on Linux) through the existence probe only, so this check never
+ * asks the store to print the secret. When the probe's own command could
+ * otherwise print the value (Linux's secret-tool "lookup", reused for its
+ * exit code), `probe.discardStdout` tells runCommand to spawn with stdout set
+ * to "ignore" — the value never exists as a string inside this process.
+ *
+ * The module load is guarded: a missing or broken orchestrator/secretStore.ts
+ * (e.g. a fresh checkout before `npm install`, or a corrupted working tree)
+ * must fail this one check closed, the same way profileChecks already
+ * degrades for config/clientProfile.ts, not crash the whole doctor run.
  *
  * @param {any} profile
  * @param {any} readiness
  * @param {string=} platform
+ * @param {boolean=} wsl
+ * @param {typeof importTypeScriptModule=} load injectable for tests; defaults to the real loader
  */
-async function metaKeychainCheck(profile, readiness, platform = process.platform) {
+export async function secretStoreCheck(profile, readiness, platform = process.platform, wsl = undefined, load = importTypeScriptModule) {
   const enabled = readiness?.stage8?.enabled === true || readiness?.stage9?.enabled === true;
-  if (platform !== "darwin") {
-    return doctorCheck({
-      id: "meta-keychain",
-      title: "Meta token in macOS Keychain",
-      status: macOnlyCapabilityStatus(platform, enabled),
-      summary: enabled
-        ? "Stage 8 or 9 is enabled, but Meta token retrieval is supported only through macOS Keychain in this release."
-        : "Meta verification is unavailable on this operating system and remains disabled.",
-      action: enabled
-        ? "Run Meta verification on macOS, or disable the Meta capability switches."
-        : "Use macOS before enabling Meta capabilities.",
-    });
+  const title = "Meta token in the host secret store";
+  let secretStoreModule;
+  try {
+    secretStoreModule = await load(DEFAULT_ROOT, "orchestrator/secretStore");
+  } catch {
+    return doctorCheck({ id: "meta-keychain", title, status: enabled ? "fail" : "warn",
+      summary: "The secret store module could not be loaded.",
+      action: "Run npm install and restore orchestrator/secretStore.ts, then rerun the doctor." });
   }
-
+  const { detectSecretBackend, secretExistsCommand, installHint } = secretStoreModule;
+  const backend = detectSecretBackend(platform, wsl);
+  if (!backend) {
+    return doctorCheck({ id: "meta-keychain", title, status: enabled ? "fail" : "warn",
+      summary: "This operating system has no supported secret store; Meta verification stays disabled.",
+      action: installHint(undefined) });
+  }
   const service = profile?.meta?.tokenKeychainService;
   if (!service) {
-    return doctorCheck({
-      id: "meta-keychain",
-      title: "Meta token in macOS Keychain",
-      status: "warn",
-      summary: "No Keychain service name is configured; Stage 8 remains disabled.",
-      action: "When enabling Stage 8, store the approved token in macOS Keychain and set meta.tokenKeychainService in the private client profile.",
-    });
+    return doctorCheck({ id: "meta-keychain", title, status: "warn",
+      summary: "No secret service name is configured; Stage 8 remains disabled.",
+      action: `When enabling Stage 8, store the approved token (${backend}) and set meta.tokenKeychainService in the private client profile.` });
   }
-
-  const response = await runCommand(
-    "/usr/bin/security",
-    ["find-generic-password", "-s", service],
-    { env: minimalKeychainEnvironment() },
-  );
+  const probe = secretExistsCommand(backend, service);
+  const response = await runCommand(probe.command, probe.args, { env: probe.env, discardStdout: probe.discardStdout === true });
   if (!response.ok) {
-    return doctorCheck({
-      id: "meta-keychain",
-      title: "Meta token in macOS Keychain",
-      status: enabled ? "fail" : "warn",
-      summary: "The configured Keychain item could not be found or accessed. No secret value was requested or printed.",
-      action: "Create or unlock the approved generic-password item, verify its service name, then rerun the doctor.",
-    });
+    return doctorCheck({ id: "meta-keychain", title, status: enabled ? "fail" : "warn",
+      summary: `The configured item was not found in ${backend}. No secret value was requested or printed.`,
+      action: installHint(backend) });
   }
-
-  return doctorCheck({
-    id: "meta-keychain",
-    title: "Meta token in macOS Keychain",
-    status: enabled ? "pass" : "warn",
-    summary: enabled
-      ? "The configured Keychain item exists; its secret value was not requested or printed."
-      : "The configured Keychain item exists, but Meta capabilities remain disabled by profile readiness.",
-    ...(enabled ? {} : {
-      action: "Keep Meta capabilities disabled until every required field and explicit client permission is present.",
-    }),
-  });
+  return doctorCheck({ id: "meta-keychain", title, status: enabled ? "pass" : "warn",
+    summary: `The configured item exists in ${backend}; its value was not read by the doctor.`,
+    action: enabled ? "None." : "Enable the Meta capability switches when ready." });
 }
 
 function minimalGitEnvironment() {
@@ -1689,7 +1852,7 @@ export async function runDoctor(options = {}) {
     portChecks(effectiveEnv),
     profileChecks(root, effectiveEnv),
   ]);
-  const [landingResult, stage5SandboxResult, metaKeychainResult, pageTypesResult] = await Promise.all([
+  const [landingResult, stage5SandboxResult, metaKeychainResult, pageTypesResult, mockupBrowserResult] = await Promise.all([
     landingWorkspaceCheck(
       root,
       effectiveEnv,
@@ -1697,8 +1860,9 @@ export async function runDoctor(options = {}) {
       profileResult.readiness,
     ),
     stage5SandboxCheck(profileResult.readiness),
-    metaKeychainCheck(profileResult.profile, profileResult.readiness),
+    secretStoreCheck(profileResult.profile, profileResult.readiness),
     pageTypesCheck(profileResult.profile, effectiveEnv, root),
+    mockupBrowserCheck(profileResult.readiness, effectiveEnv),
   ]);
 
   return [
@@ -1710,6 +1874,7 @@ export async function runDoctor(options = {}) {
     ...claudeResult,
     claudeMaxSubscriptionCheck(),
     playwrightResult,
+    mockupBrowserResult,
     ...pythonResult,
     ...dataResult,
     ...portsResult,

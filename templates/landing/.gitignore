@@ -1,0 +1,12 @@
+# No trailing slash: the run worktree mirrors node_modules as a symlink, and
+# a directory-only pattern leaves that symlink untracked, which blocks stage 5.
+node_modules
+.next/
+out/
+.env*
+*.tsbuildinfo
+next-env.d.ts
+AGENTS.md
+CLAUDE.md
+.DS_Store
+*.pem

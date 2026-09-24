@@ -9,6 +9,10 @@ import os from "node:os";
 import path from "node:path";
 import { sanitizeEnv, spawnAgent } from "@/orchestrator/spawnAgent";
 
+// This file tests process lifecycle and argv shaping on every host; the
+// release gate itself has its own platform-independent test in agentToolPlatform.test.ts.
+vi.mock("@/orchestrator/platformAcceptance", () => ({ linuxLandingAccepted: () => true }));
+
 const temporaryDirectories: string[] = [];
 
 async function fakeClaude(source: string): Promise<string> {
@@ -119,7 +123,7 @@ process.stdin.on("end", () => process.stdout.write(JSON.stringify(process.argv.s
         allowUnsandboxedCommands: false,
       },
     };
-    const result = await spawnAgent({
+    const launch = spawnAgent({
       prompt: "assets",
       onToken: () => {},
       command,
@@ -129,6 +133,7 @@ process.stdin.on("end", () => process.stdout.write(JSON.stringify(process.argv.s
       disallowedTools: ["Task"],
       settings,
     });
+    const result = await launch;
     const argv = JSON.parse(result.fullText) as string[];
     expect(argv).toEqual(expect.arrayContaining([
       "--tools",
