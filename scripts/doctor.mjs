@@ -565,13 +565,79 @@ async function claudeChecks() {
   ];
 }
 
-function claudeMaxSubscriptionCheck() {
+/** The tier named in a Claude CLI credential store's JSON, lower-cased, or undefined. */
+function subscriptionTierFrom(raw) {
+  try {
+    const tier = JSON.parse(raw)?.claudeAiOauth?.subscriptionType;
+    return typeof tier === "string" && tier.trim() ? tier.trim().toLowerCase() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The subscription tier of the authenticated Claude account. `claude auth
+ * status --json` does not expose it; the CLI's own credential store does
+ * (claudeAiOauth.subscriptionType): the credentials file under the config
+ * directory on Linux and WSL2, the "Claude Code-credentials" Keychain item
+ * on macOS. The store also holds the tokens: they are parsed in memory and
+ * never returned, logged or printed. A client on the Pro tier installed the
+ * board and only learned at the first agent run that MAX is required.
+ *
+ * @param {{ platform?: string, env?: NodeJS.ProcessEnv, home?: string, readFile?: (file: string) => Promise<string>, runCommand?: typeof runCommand }} deps
+ * @returns {Promise<{ tier?: string, source?: string }>}
+ */
+export async function readClaudeSubscriptionTier(deps = {}) {
+  const platform = deps.platform ?? process.platform;
+  const env = deps.env ?? process.env;
+  const home = deps.home ?? os.homedir();
+  const readFile = deps.readFile ?? ((file) => fs.readFile(file, "utf8"));
+  const run = deps.runCommand ?? runCommand;
+  const configDir = env.CLAUDE_CONFIG_DIR?.trim() || path.join(home, ".claude");
+  try {
+    const tier = subscriptionTierFrom(await readFile(path.join(configDir, ".credentials.json")));
+    if (tier) return { tier, source: "the Claude CLI credentials file" };
+  } catch {
+    // no file, or unreadable: fall through
+  }
+  if (platform === "darwin") {
+    const result = await run("/usr/bin/security", ["find-generic-password", "-s", "Claude Code-credentials", "-w"], {
+      env: minimalClaudeEnvironment(),
+    });
+    if (result.ok) {
+      const tier = subscriptionTierFrom(result.stdout);
+      if (tier) return { tier, source: "the macOS Keychain" };
+    }
+  }
+  return {};
+}
+
+/** @param {Parameters<typeof readClaudeSubscriptionTier>[0]=} deps */
+export async function claudeSubscriptionCheck(deps = {}) {
+  const { tier, source } = await readClaudeSubscriptionTier(deps);
+  if (!tier) {
+    return doctorCheck({
+      id: "claude-max-subscription",
+      title: "Claude MAX subscription",
+      status: "warn",
+      summary: "The subscription tier could not be read from the Claude CLI's credential store, so MAX cannot be verified automatically.",
+      action: "Before a real run, confirm manually that the authenticated Claude account has an active MAX subscription. Do not configure a paid API fallback.",
+    });
+  }
+  if (tier === "max") {
+    return doctorCheck({
+      id: "claude-max-subscription",
+      title: "Claude MAX subscription",
+      status: "pass",
+      summary: `The authenticated Claude account is on the MAX tier (read from ${source}).`,
+    });
+  }
   return doctorCheck({
     id: "claude-max-subscription",
     title: "Claude MAX subscription",
-    status: "warn",
-    summary: "Claude CLI authentication status does not expose a reliable subscription-tier field, so MAX cannot be verified automatically.",
-    action: "Before a real run, confirm manually that the authenticated Claude account has an active MAX subscription. Do not configure a paid API fallback.",
+    status: "fail",
+    summary: `The authenticated Claude account is on the "${tier}" tier (read from ${source}); the board's agents require MAX.`,
+    action: "Sign in with a MAX account: claude auth logout, then claude auth login. Do not configure a paid API fallback.",
   });
 }
 
@@ -1865,6 +1931,7 @@ export async function runDoctor(options = {}) {
     mockupBrowserCheck(profileResult.readiness, effectiveEnv),
   ]);
 
+  const subscriptionResult = await claudeSubscriptionCheck();
   return [
     nodeCheck(),
     processTreePlatformCheck(),
@@ -1872,7 +1939,7 @@ export async function runDoctor(options = {}) {
     claudeApiEnvironmentCheck(effectiveEnv),
     metaGraphApiVersionCheck(effectiveEnv),
     ...claudeResult,
-    claudeMaxSubscriptionCheck(),
+    subscriptionResult,
     playwrightResult,
     mockupBrowserResult,
     ...pythonResult,

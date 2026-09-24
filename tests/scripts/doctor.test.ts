@@ -4,6 +4,8 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   assessClaudeAuth,
+  claudeSubscriptionCheck,
+  readClaudeSubscriptionTier,
   assessPrivateDirectory,
   claudeApiEnvironmentCheck,
   doctorCheck,
@@ -346,5 +348,61 @@ describe("doctor pure checks", () => {
 
     expect(report).toContain("ANTHROPIC_API_KEY");
     expect(report).not.toContain(canary);
+  });
+});
+
+describe("Claude subscription tier", () => {
+  // A client on the Pro tier installed the board and only learned at the
+  // first agent run that MAX is required; the CLI's auth status hides the
+  // tier, its credential store does not.
+  const store = (tier: string) => JSON.stringify({ claudeAiOauth: { accessToken: "sk-ant-oat01-SECRET", refreshToken: "sk-ant-ort01-SECRET", subscriptionType: tier } });
+  const noKeychain = async () => ({ ok: false, stdout: "", stderr: "", code: 44 });
+
+  it("reads the tier from the credentials file under the config directory first", async () => {
+    const seen: string[] = [];
+    const result = await readClaudeSubscriptionTier({
+      platform: "linux", home: "/home/tester", env: {} as NodeJS.ProcessEnv,
+      readFile: async (file) => { seen.push(file); return store("max"); },
+      runCommand: noKeychain as never,
+    });
+    expect(result).toEqual({ tier: "max", source: "the Claude CLI credentials file" });
+    expect(seen).toEqual(["/home/tester/.claude/.credentials.json"]);
+  });
+  it("honours CLAUDE_CONFIG_DIR and falls back to the macOS Keychain item", async () => {
+    const seen: string[] = [];
+    const result = await readClaudeSubscriptionTier({
+      platform: "darwin", home: "/home/mac-tester", env: { CLAUDE_CONFIG_DIR: "/cfg" } as unknown as NodeJS.ProcessEnv,
+      readFile: async (file) => { seen.push(file); throw Object.assign(new Error("ENOENT"), { code: "ENOENT" }); },
+      runCommand: (async (file: string, args: string[]) => {
+        seen.push(`${file} ${args.join(" ")}`);
+        return { ok: true, stdout: store("pro"), stderr: "", code: 0 };
+      }) as never,
+    });
+    expect(result).toEqual({ tier: "pro", source: "the macOS Keychain" });
+    expect(seen[0]).toBe("/cfg/.credentials.json");
+    expect(seen[1]).toBe("/usr/bin/security find-generic-password -s Claude Code-credentials -w");
+  });
+  it("passes on MAX, fails naming any other tier, warns when unreadable, and never leaks a token", async () => {
+    const deps = (tier?: string) => ({
+      platform: "linux" as const, home: "/h", env: {} as NodeJS.ProcessEnv,
+      readFile: async () => { if (!tier) throw new Error("ENOENT"); return store(tier); },
+      runCommand: noKeychain as never,
+    });
+    const max = await claudeSubscriptionCheck(deps("Max"));
+    expect(max.status).toBe("pass");
+    const pro = await claudeSubscriptionCheck(deps("pro"));
+    expect(pro.status).toBe("fail");
+    expect(pro.summary).toContain('"pro"');
+    expect(pro.action).toContain("claude auth login");
+    const unknown = await claudeSubscriptionCheck(deps(undefined));
+    expect(unknown.status).toBe("warn");
+    for (const check of [max, pro, unknown]) {
+      expect(JSON.stringify(check)).not.toContain("SECRET");
+    }
+  });
+  it("treats a store without a tier, or with broken JSON, as unreadable", async () => {
+    const readFile = async () => JSON.stringify({ claudeAiOauth: { accessToken: "x" } });
+    expect(await readClaudeSubscriptionTier({ platform: "linux", home: "/h", env: {} as NodeJS.ProcessEnv, readFile, runCommand: noKeychain as never })).toEqual({});
+    expect(await readClaudeSubscriptionTier({ platform: "linux", home: "/h", env: {} as NodeJS.ProcessEnv, readFile: async () => "{not json", runCommand: noKeychain as never })).toEqual({});
   });
 });
