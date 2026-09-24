@@ -23,6 +23,19 @@ export function assertLinuxMountPath(value: string, home = os.homedir()): void {
   }
 }
 
+/**
+ * The Node binary and this helper script are bind-mounted into the sandbox
+ * like any declared read path, so they face the same rule. The /mnt refusal
+ * otherwise lived only in setup.sh, which runs once at install: a WSL2 client
+ * who later copied the board onto /mnt/c and ran npm run dev got a
+ * Windows-filesystem path inside a sandbox whose whole contract is that
+ * Windows resources are blocked.
+ */
+export function assertLinuxLauncherPaths(node: string, helper: string): void {
+  assertLinuxMountPath(node);
+  assertLinuxMountPath(helper);
+}
+
 async function regularExecutable(value: string): Promise<string> {
   const resolved = await fs.realpath(value).catch(() => {
     throw new Error(`Required Linux sandbox executable is unavailable: ${value}`);
@@ -59,6 +72,7 @@ export async function linuxSandboxedNodeLaunch(
     fs.realpath(path.join(process.cwd(), "scripts", "linux-process-sandbox.py")),
     fs.realpath(spec.workingDirectory),
   ]);
+  assertLinuxLauncherPaths(node, helper);
   const readPaths = [...new Set(await Promise.all(spec.readPaths.map(async (value) => {
     assertLinuxMountPath(value);
     const resolved = await fs.realpath(value);

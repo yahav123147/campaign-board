@@ -328,6 +328,45 @@ describe("mirrorWorkspaceRuntimeFiles", () => {
     await fs.copyFile(path.join(base, ".gitignore"), path.join(wt, ".gitignore"));
     await fs.mkdir(path.join(base, "node_modules"));
     await expect(mirrorWorkspaceRuntimeFiles(base, wt)).rejects.toThrow(/trailing slash/);
+    // The message quotes the pattern that is actually there, so the operator
+    // is not sent to fix a slash on a line that does not exist.
+    await expect(mirrorWorkspaceRuntimeFiles(base, wt)).rejects.toThrow(/node_modules\//);
+    await expect(fs.lstat(path.join(wt, "node_modules"))).rejects.toThrow();
+  });
+
+  it("says the pattern is missing, not mis-slashed, when the worktree ignores nothing", async () => {
+    const fs = await import("node:fs/promises");
+    const os = await import("node:os");
+    const path = await import("node:path");
+    const { execFileSync } = await import("node:child_process");
+    const { mirrorWorkspaceRuntimeFiles } = await import("@/orchestrator/landingWorktree");
+    const base = await fs.mkdtemp(path.join(os.tmpdir(), "lw-base-"));
+    const wt = await fs.mkdtemp(path.join(os.tmpdir(), "lw-wt-"));
+    execFileSync("git", ["init", "-q"], { cwd: base });
+    execFileSync("git", ["init", "-q"], { cwd: wt });
+    await fs.writeFile(path.join(base, ".gitignore"), "node_modules\n");
+    // The worktree's .gitignore has no node_modules pattern at all.
+    await fs.writeFile(path.join(wt, ".gitignore"), ".env.local\n");
+    await fs.mkdir(path.join(base, "node_modules"));
+    await expect(mirrorWorkspaceRuntimeFiles(base, wt)).rejects.toThrow(/no node_modules pattern/);
+    await expect(mirrorWorkspaceRuntimeFiles(base, wt)).rejects.not.toThrow(/directory-only pattern/);
+    await expect(fs.lstat(path.join(wt, "node_modules"))).rejects.toThrow();
+  });
+
+  it("reports a git failure as a git failure, not as a .gitignore mistake", async () => {
+    const fs = await import("node:fs/promises");
+    const os = await import("node:os");
+    const path = await import("node:path");
+    const { execFileSync } = await import("node:child_process");
+    const { mirrorWorkspaceRuntimeFiles } = await import("@/orchestrator/landingWorktree");
+    const base = await fs.mkdtemp(path.join(os.tmpdir(), "lw-base-"));
+    const wt = await fs.mkdtemp(path.join(os.tmpdir(), "lw-wt-"));
+    execFileSync("git", ["init", "-q"], { cwd: base });
+    await fs.writeFile(path.join(base, ".gitignore"), "node_modules\n");
+    await fs.mkdir(path.join(base, "node_modules"));
+    // Not a git repository: check-ignore exits 128, which is not an answer
+    // about the pattern at all.
+    await expect(mirrorWorkspaceRuntimeFiles(base, wt)).rejects.toThrow(/git check-ignore failed/);
     await expect(fs.lstat(path.join(wt, "node_modules"))).rejects.toThrow();
   });
 

@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import { describe, expect, it } from "vitest";
 import { buildMacProcessSandboxProfile, sandboxedNodeLaunch } from "@/orchestrator/processSandbox";
-import { assertLinuxMountPath, linuxSandboxedNodeLaunch } from "@/orchestrator/linuxProcessSandbox";
+import { assertLinuxLauncherPaths, assertLinuxMountPath, linuxSandboxedNodeLaunch } from "@/orchestrator/linuxProcessSandbox";
 
 describe("generated-page process sandbox", () => {
   it("is deny-by-default, limits execution to Node, and has no network for builds", () => {
@@ -65,6 +65,15 @@ describe("Linux generated-page sandbox contract", () => {
       expect(() => assertLinuxMountPath(value, "/home/client")).toThrow();
     }
     expect(() => assertLinuxMountPath("/home/client/landing-worktree", "/home/client")).not.toThrow();
+  });
+
+  it("holds the node binary and the helper script to the same mount rule as any read path", () => {
+    // A board copied or cloned onto /mnt/c: setup.sh refused that at install
+    // time, but nothing re-checked it at launch, so the helper script came in
+    // as --ro-bind /mnt/c/board/scripts/linux-process-sandbox.py.
+    expect(() => assertLinuxLauncherPaths("/usr/bin/node", "/home/client/board/scripts/linux-process-sandbox.py")).not.toThrow();
+    expect(() => assertLinuxLauncherPaths("/usr/bin/node", "/mnt/c/board/scripts/linux-process-sandbox.py")).toThrow("host-integration mount");
+    expect(() => assertLinuxLauncherPaths("/mnt/c/node/node.exe", "/home/client/board/scripts/linux-process-sandbox.py")).toThrow("host-integration mount");
   });
 
   it("rejects unsupported HTTPS instead of changing the requested policy", async () => {

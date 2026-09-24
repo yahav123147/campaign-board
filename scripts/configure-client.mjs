@@ -21,6 +21,17 @@ export function defaultClientDirectory(id, { platform = process.platform, home =
   return path.join(base, id);
 }
 
+/**
+ * Where landing builds may be switched on: macOS, or Linux/WSL2 once the
+ * release switch is open. The interactive wizard and configureClient's own
+ * refusal read the same rule, so the wizard never hides a question whose
+ * answer would be accepted (a WSL2 install used to be created with the
+ * capability off and no question asked).
+ */
+export function landingQuestionOffered(platform, linuxAccepted) {
+  return platform === "darwin" || (platform === "linux" && linuxAccepted === true);
+}
+
 async function exists(file) {
   try { await fs.lstat(file); return true; }
   catch (error) { if (error.code === "ENOENT") return false; throw error; }
@@ -71,7 +82,7 @@ export async function configureClient(options, dependencies = {}) {
   if (!fact || fact.length > 1_000) throw new Error("Provide one verified business fact (1–1000 characters).");
   if (!ID_PATTERN.test(id) || id.length > 63) throw new Error("Client ID must use lowercase letters, digits and internal hyphens (maximum 63 characters).");
   const linuxAccepted = dependencies.linuxAccepted ?? linuxLandingAccepted();
-  if (options.enableLanding && platform !== "darwin" && !(platform === "linux" && linuxAccepted)) {
+  if (options.enableLanding && !landingQuestionOffered(platform, linuxAccepted)) {
     throw new Error("Landing builds on WSL2/Linux are awaiting acceptance. Omit --enable-landing, or run on macOS.");
   }
   const locale = options.locale ?? "he-IL";
@@ -176,7 +187,7 @@ async function main() {
       options.fact ??= await readline.question("עובדה מאומתת על העסק וההצעה / verified business fact: ");
       const suggestedDirectory = defaultClientDirectory(options.id);
       options.directory ??= (await readline.question(`תיקייה פרטית חדשה / new private directory [${suggestedDirectory}]: `)).trim() || suggestedDirectory;
-      if (process.platform === "darwin" && options.enableLanding === undefined) {
+      if (options.enableLanding === undefined && landingQuestionOffered(process.platform, linuxLandingAccepted())) {
         options.enableLanding = /^(y|yes|כן)$/i.test((await readline.question("לאפשר בניית דפים מקומית? / enable local landing builds? [y/N]: ")).trim());
       }
     } finally { readline.close(); }

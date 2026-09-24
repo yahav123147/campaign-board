@@ -130,6 +130,16 @@ export function reviewerActions(stages, firstSeenAwaiting, feedbackSent, now, gr
       }
       const sent = feedbackSent.get(key) ?? 0;
       if (sent >= MAX_FEEDBACK_ROUNDS) {
+        // A design review (5.3) the critics still block after the feedback
+        // budget is, by the board's own design, handed to the human ("מעביר
+        // אליך כמו שזה"). The reviewer here decides to see the page: the
+        // approval is recorded with its blockers in the evidence, so the
+        // downstream platform items (preview, browser, QA, delivery) are
+        // exercised without the design verdict ever reading "passed".
+        if (task.designReview) {
+          actions.push({ ...gate, action: "approve-with-blockers", blockers: blockers.slice(0, 600) });
+          continue;
+        }
         actions.push({ ...gate, action: "stop", reason: `${key} still blocked by the critic after ${sent} feedback rounds: ${blockers.slice(0, 300)}` });
         continue;
       }
@@ -185,6 +195,20 @@ export function errorActions(stages, feedbackSent) {
   });
 }
 
+export const MAX_FEEDBACK_LOCK_RETRIES = 6;
+
+/**
+ * A 409 on an errored sub-task's feedback means the board is holding that
+ * sub-task's execution lock. Usually the next poll finds it released; a lock
+ * left by a dead attempt never is, and since nothing changes the stall clock
+ * only fires after 130 minutes on a runner billed at 2x. Counted separately
+ * from the feedback rounds, because no feedback was accepted.
+ */
+export function feedbackLockFailure(key, retries, limit = MAX_FEEDBACK_LOCK_RETRIES) {
+  if (retries < limit) return undefined;
+  return `feedback on failed ${key} was refused with 409 ${retries} times in a row; its execution lock is held and the sub-task is not moving`;
+}
+
 /**
  * True when nothing has changed for longer than the stall limit. Run
  * 35883190668 sat inside its agent step for the job's whole five hours: the
@@ -200,22 +224,60 @@ export function runIsComplete(stages, events) {
 }
 
 /**
+ * How stage 5.3's design review ended: "passed", "approved-with-blockers"
+ * (the reviewer's recorded decision after the feedback budget), or
+ * "blocked". Informational: it is reported beside the platform items and
+ * never counted as a platform proof.
+ */
+export function designReviewOutcome(stages, decision) {
+  const build = stages?.find((stage) => stage.number === 5)?.subTasks?.find((task) => task.id === "5.3");
+  const review = build?.designReview;
+  if (decision) return { status: "approved-with-blockers", detail: `after ${decision.rounds} feedback rounds: ${decision.blockers}` };
+  if (!review) return { status: "unknown", detail: "no design review recorded" };
+  if (review.passed) return { status: "passed", detail: "every design critic passed" };
+  return { status: "blocked", detail: `blocked by ${[...(review.failing ?? []), ...(review.silent ?? [])].join(", ")}` };
+}
+
+/**
  * Assesses the collected facts against the checklist. Pure: the caller
  * gathers the facts from disk and the API; this decides what they prove.
+ * The design-review line is informational (a human decision, not a platform
+ * proof) and does not enter the overall verdict.
  */
 export function assessEvidence(facts) {
+  const informational = facts.designReview
+    ? [{ id: "design-review", ok: facts.designReview.status === "passed", detail: `${facts.designReview.status}: ${facts.designReview.detail}`, informational: true }]
+    : [];
   const items = [
     { id: "harvest-facts", ok: facts.factsJsonExists, detail: "harvest/facts.json exists" },
     { id: "harvest-images", ok: facts.harvestImageCount > 0, detail: `${facts.harvestImageCount} harvested images` },
     { id: "build-sandboxed", ok: facts.buildLogHasSandboxedLine, detail: "build log carries the sandboxed-build line" },
     { id: "build-network-none", ok: facts.buildProfileNetwork === "none", detail: `build sandbox profile network: ${facts.buildProfileNetwork ?? "(not logged)"}` },
     { id: "preview-up", ok: facts.previewUp && facts.previewHttpStatus === 200, detail: `preview ${facts.previewUrl ?? "?"} up=${facts.previewUp} http=${facts.previewHttpStatus}` },
-    { id: "preview-opened-in-windows", ok: facts.previewOpenedLine, detail: "stage 5.4 reported the page was opened in the browser (powershell.exe Start-Process on WSL2)" },
+    // The board's own line is not proof on its own: it was printed for a
+    // launcher that was not on PATH (run 35749912557). When the Windows-side
+    // tasklist capture is available it has to agree. The workflow writes that
+    // capture after this driver exits, so an absent file stays neutral here
+    // and the flow step enforces it (see .github/workflows/wsl2-acceptance.yml).
+    {
+      id: "preview-opened-in-windows",
+      ok: Boolean(facts.previewOpenedLine) && (facts.windowsBrowserProcesses === undefined || facts.windowsBrowserProcesses > 0),
+      detail: `stage 5.4 line: ${facts.previewOpenedLine ? "yes" : "NO"}; Windows browser processes: ${facts.windowsBrowserProcesses ?? "(captured after this driver exits)"}`,
+    },
     { id: "critic-shots", ok: facts.stripCount > 0, detail: `${facts.stripCount} critic strips under shots/strips` },
     { id: "delivered-to-branch", ok: Boolean(facts.landingCommitSha), detail: `landing commit ${facts.landingCommitSha ?? "(none)"}` },
     { id: "run-completed", ok: facts.runCompleted, detail: "every stage approved" },
   ];
-  return { ok: items.every((item) => item.ok), items };
+  return { ok: items.every((item) => item.ok), items: [...items, ...informational] };
+}
+
+/**
+ * How many browser processes a `tasklist.exe /FI "IMAGENAME eq msedge.exe"`
+ * capture lists. Zero means Start-Process opened nothing, whatever the board
+ * printed. Pure, so the same rule reads a capture taken at any time.
+ */
+export function browserProcessesSeen(text) {
+  return text.split("\n").filter((line) => line.includes("msedge.exe")).length;
 }
 
 /** The "network" value in the last "# sandbox profile" block of a log, or undefined. */
@@ -298,7 +360,7 @@ async function countFiles(directory, pattern) {
   }
 }
 
-async function gatherFacts({ base, runId, runsDir, stages, events }) {
+async function gatherFacts({ base, runId, runsDir, evidenceDir, stages, events }) {
   const runDir = path.join(runsDir, runId);
   const logsDir = path.join(runDir, "logs");
   const buildLog = await fs.readFile(path.join(logsDir, "stage-5-3-daniel-lp-designer.log"), "utf8").catch(() => "");
@@ -319,8 +381,15 @@ async function gatherFacts({ base, runId, runsDir, stages, events }) {
   } catch {
     // reported below as not up
   }
+  // The workflow captures the Windows process list next to the run's evidence
+  // directory. On the current ordering it does not exist yet when this runs;
+  // a rerun or a future ordering that writes it first makes the item stricter.
+  const browserCapture = evidenceDir
+    ? await fs.readFile(path.join(path.dirname(evidenceDir), "windows-browser-processes.txt"), "utf8").catch(() => undefined)
+    : undefined;
   return {
     runDir,
+    windowsBrowserProcesses: browserCapture === undefined ? undefined : browserProcessesSeen(browserCapture),
     factsJsonExists: await fs.access(path.join(runDir, "harvest", "facts.json")).then(() => true, () => false),
     harvestImageCount: await countFiles(path.join(runDir, "harvest", "raw"), /\.(jpe?g|png|webp|gif)$/i),
     buildLogHasSandboxedLine: buildLog.includes("מריץ build מבוקר"),
@@ -389,10 +458,15 @@ export async function main(env = process.env) {
 
   const firstSeenAwaiting = new Map();
   const feedbackSent = new Map();
+  // 409s on an errored sub-task's feedback, counted apart from the rounds
+  // above: a 409 means no feedback was accepted at all.
+  const lockRetries = new Map();
   const approvedOnce = new Set();
   const seenStatus = new Map();
   const started = Date.now();
   let lastChangeAt = started;
+  /** Set when the reviewer approved a blocked design review after the feedback budget. */
+  let designReviewDecision;
   let stages;
   let events = [];
   let failure;
@@ -425,8 +499,19 @@ export async function main(env = process.env) {
         break;
       }
       const status = await decide(base, runId, gate, "feedback", { feedback: gate.feedback }, log);
-      if (status === 200 || status === 202) feedbackSent.set(key, (feedbackSent.get(key) ?? 0) + 1);
-      else if (status !== 409) {
+      if (status === 200 || status === 202) {
+        feedbackSent.set(key, (feedbackSent.get(key) ?? 0) + 1);
+        lockRetries.delete(key);
+      } else if (status === 409) {
+        const retries = (lockRetries.get(key) ?? 0) + 1;
+        lockRetries.set(key, retries);
+        const reason = feedbackLockFailure(key, retries);
+        if (reason) {
+          failure = reason;
+          stopped = true;
+          break;
+        }
+      } else {
         failure = `feedback on failed ${key} returned ${status}`;
         stopped = true;
         break;
@@ -442,6 +527,15 @@ export async function main(env = process.env) {
       if (gate.action === "stop") {
         failure = gate.reason;
         break;
+      }
+      if (gate.action === "approve-with-blockers") {
+        if (approvedOnce.has(key)) continue;
+        log(`reviewer decision: approving ${key} with recorded design blockers after ${MAX_FEEDBACK_ROUNDS} feedback rounds`);
+        designReviewDecision = { key, blockers: gate.blockers, rounds: feedbackSent.get(key) ?? 0 };
+        const status = await decide(base, runId, gate, "decide", { action: "approve" }, log);
+        if (status === 200 || status === 202) approvedOnce.add(key);
+        else if (status !== 409) failure = `approval of ${key} failed with ${status}`;
+        continue;
       }
       if (gate.action === "feedback") {
         const status = await decide(base, runId, gate, "feedback", { feedback: gate.feedback }, log);
@@ -487,7 +581,8 @@ export async function main(env = process.env) {
     await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
   }
 
-  const facts = await gatherFacts({ base, runId, runsDir, stages, events });
+  const facts = await gatherFacts({ base, runId, runsDir, evidenceDir: outDir, stages, events });
+  facts.designReview = designReviewOutcome(stages, designReviewDecision);
   const assessment = assessEvidence(facts);
   await copyEvidence(facts, outDir);
   const report = { runId, siteUrl, failure, facts: { ...facts, runDir: undefined }, assessment, timeline };
@@ -499,7 +594,7 @@ export async function main(env = process.env) {
     "",
     "| item | ok | detail |",
     "|---|---|---|",
-    ...assessment.items.map((item) => `| ${item.id} | ${item.ok ? "yes" : "NO"} | ${item.detail} |`),
+    ...assessment.items.map((item) => `| ${item.id} | ${item.informational ? (item.ok ? "yes (informational)" : "no (informational)") : (item.ok ? "yes" : "NO")} | ${item.detail} |`),
     "",
   ];
   await fs.writeFile(path.join(outDir, "evidence.md"), lines.join("\n"), "utf8");
@@ -508,7 +603,10 @@ export async function main(env = process.env) {
     console.error(`ACCEPTANCE: NOT PROVEN${failure ? ` (${failure})` : ""}`);
     return 1;
   }
-  console.log("ACCEPTANCE: every checklist item proven");
+  const review = facts.designReview?.status;
+  console.log(review && review !== "passed"
+    ? `ACCEPTANCE: every platform item proven; design review ${review} (a reviewer decision, recorded above)`
+    : "ACCEPTANCE: every checklist item proven");
   return 0;
 }
 

@@ -9,3 +9,13 @@
 # file not found" (exit 127). Text files are LF on every platform so a clone
 # made on the Windows side and copied into WSL2 still runs.
 * text=auto eol=lf
+
+# Auto-detection is reliable for files holding NUL bytes, but an explicit
+# block removes the class of risk entirely and states the intent for the next
+# asset type somebody adds.
+*.ttf binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.gif binary

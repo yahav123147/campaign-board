@@ -61,6 +61,24 @@ class SocketFilterTests(unittest.TestCase):
             self.filter("i686")
 
 
+class BubblewrapArgsTests(unittest.TestCase):
+    """Host-independent: pins the bwrap argv itself, since the live /dev/tty
+    assertion below returns ENXIO on any TTY-less CI step with or without
+    --new-session (it is a belt, this is the pin)."""
+
+    def test_new_session_detaches_the_sandbox_from_the_terminal(self):
+        helper = Path(__file__).resolve().parents[2] / "scripts/linux-process-sandbox.py"
+        spec = importlib.util.spec_from_file_location("sandbox_helper", helper)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        config = {"bwrap": "/usr/bin/bwrap", "readPaths": [], "writePaths": [], "network": "none",
+                  "cwd": "/tmp", "node": sys.executable, "helper": str(helper), "launchDir": "/tmp"}
+        args = module.bubblewrap_args(config, 3)
+        self.assertIn("--new-session", args)
+        self.assertIn("--die-with-parent", args)
+        self.assertIn("--unshare-user", args)
+
+
 @unittest.skipUnless(sys.platform == "linux" and os.environ.get("COUNCIL_TEST_LINUX_SANDBOX") == "1",
                      "requires an explicitly enabled, namespace-capable Linux host")
 class LinuxSandboxTests(unittest.TestCase):
@@ -132,7 +150,7 @@ class LinuxSandboxTests(unittest.TestCase):
         self.addCleanup(host.close)
         code = r'''
 const fs=require('fs'),net=require('net'),cp=require('child_process');const result={};
-const attempts={PRIVATE:()=>fs.readFileSync(PRIVATE_PATH),SOURCE:()=>fs.writeFileSync(SOURCE_PATH,'bad'),ROOT:()=>fs.writeFileSync('/escape','bad'),OUTPUT:()=>fs.writeFileSync(OUTPUT_PATH,'ok')};
+const attempts={PRIVATE:()=>fs.readFileSync(PRIVATE_PATH),SOURCE:()=>fs.writeFileSync(SOURCE_PATH,'bad'),ROOT:()=>fs.writeFileSync('/escape','bad'),OUTPUT:()=>fs.writeFileSync(OUTPUT_PATH,'ok'),TTY:()=>fs.openSync('/dev/tty','r')};
 for(const [name,fn] of Object.entries(attempts)){try{fn();result[name]='allowed'}catch(e){result[name]=e.code}}
 for(const p of ['/mnt','/init','/run'])result[p]=fs.existsSync(p);
 result.proc=fs.readdirSync('/proc').filter(x=>/^\d+$/.test(x)).length;
@@ -149,6 +167,9 @@ Promise.all([probe('127.0.0.1',HOST_PORT),probe('1.1.1.1',443)]).then(r=>{result
         self.assertEqual(result["SOURCE"], "EROFS")
         self.assertEqual(result["ROOT"], "EROFS")
         self.assertEqual(result["OUTPUT"], "allowed")
+        # --new-session: no controlling terminal, so the host's /dev/tty
+        # cannot be opened and TIOCSTI keystroke injection is out of reach.
+        self.assertEqual(result["TTY"], "ENXIO")
         self.assertEqual(self.source.read_text(), "unchanged")
         self.assertEqual(result["loopback"], "ECONNREFUSED")
         self.assertEqual(result["external"], "ENETUNREACH")

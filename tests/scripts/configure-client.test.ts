@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { configureClient, defaultClientDirectory, clientIdFromName } from "../../scripts/configure-client.mjs";
+import { configureClient, defaultClientDirectory, clientIdFromName, landingQuestionOffered } from "../../scripts/configure-client.mjs";
 import { getClientFeatureReadiness, validateClientProfile } from "../../config/clientProfile";
 
 let fixture: string;
@@ -107,5 +107,17 @@ describe("client onboarding", () => {
     expect(clientIdFromName("עסק לדוגמה")).toBe("client");
     expect(defaultClientDirectory("example", { platform: "linux", home: "/fixture/user", xdgDataHome: "" })).toBe("/fixture/user/.local/share/campaign-council-clients/example");
     expect(defaultClientDirectory("example", { platform: "darwin", home: "/fixture/user" })).toBe("/fixture/user/Library/Application Support/Campaign Council Clients/example");
+  });
+});
+
+describe("landingQuestionOffered", () => {
+  it("offers the wizard's landing question wherever configureClient would accept the answer", () => {
+    // The wizard used to ask on macOS only, so a WSL2 client following the
+    // guide's first command block installed with the branch's own feature off
+    // and no question asked.
+    expect(landingQuestionOffered("darwin", false)).toBe(true);
+    expect(landingQuestionOffered("linux", true)).toBe(true);
+    expect(landingQuestionOffered("linux", false)).toBe(false);
+    expect(landingQuestionOffered("win32", true)).toBe(false);
   });
 });

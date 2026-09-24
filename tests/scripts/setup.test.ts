@@ -112,6 +112,7 @@ describe("setup.sh on Linux", () => {
     try {
       const scriptPath = `${bin}:${process.env.PATH}`;
       const hasBwrap = spawnSync("bash", ["-c", "command -v bwrap"], { env: { PATH: scriptPath, NODE_ENV: "test" } }).status === 0;
+      const hasCwebp = spawnSync("bash", ["-c", "command -v cwebp"], { env: { PATH: scriptPath, NODE_ENV: "test" } }).status === 0;
       const stub = async (name: string, body: string) => {
         await fs.writeFile(path.join(bin, name), `#!/bin/bash\n${body}\n`, { mode: 0o755 });
       };
@@ -140,15 +141,17 @@ describe("setup.sh on Linux", () => {
       }
       expect(status).toBe(77);
       const log = await fs.readFile(commandLog, "utf8");
-      if (hasBwrap) {
-        // Already present on this host (e.g. the ubuntu-24.04 CI runner,
-        // which installs it ahead of the sandbox tests): the install branch
-        // must not fire.
-        expect(log).not.toContain("apt-get install -y bubblewrap");
+      // Each package is installed only when its tool is missing on this host
+      // (the ubuntu-24.04 CI runner has bwrap ahead of the sandbox tests; a
+      // Mac may have cwebp from Homebrew): the apt-get line names exactly the
+      // missing ones, and does not fire at all when nothing is missing.
+      // cwebp is the Linux stand-in for the /usr/bin/sips every Mac ships:
+      // without it stage 5.2 has no converter and cannot strip metadata.
+      const missing = [...(hasBwrap ? [] : ["bubblewrap"]), ...(hasCwebp ? [] : ["webp"])];
+      if (missing.length) {
+        expect(log).toContain(`apt-get install -y ${missing.join(" ")}`);
       } else {
-        // Absent on this host (e.g. macOS, or a bare Linux runner): setup.sh
-        // must install it via sudo apt-get.
-        expect(log).toContain("apt-get install -y bubblewrap");
+        expect(log).not.toContain("apt-get install");
       }
       expect(log).toContain("npm ci");
     } finally {

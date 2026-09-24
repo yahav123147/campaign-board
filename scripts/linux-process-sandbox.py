@@ -193,9 +193,15 @@ def inner(listener_fd, ready_fd, port, command):
 
 
 def bubblewrap_args(config, filter_fd):
+    # --new-session calls setsid(): without it the sandboxed process keeps the
+    # board's controlling terminal, and --dev /dev hands it the host's
+    # /dev/tty. That is the TIOCSTI keystroke-injection escape (CVE-2017-5226)
+    # bubblewrap's own manual warns about, and WSL2's kernel has no
+    # dev.tty.legacy_tiocsti switch to close it. The child is non-interactive
+    # and takes its stdio from pipes, so losing the terminal costs nothing.
     args = [config["bwrap"], "--unshare-user", "--unshare-pid", "--unshare-net",
             "--unshare-ipc", "--unshare-uts", "--disable-userns", "--assert-userns-disabled",
-            "--cap-drop", "ALL", "--die-with-parent", "--seccomp", str(filter_fd)]
+            "--cap-drop", "ALL", "--die-with-parent", "--new-session", "--seccomp", str(filter_fd)]
     # Empty root, never --ro-bind / /. No host home, /run, /mnt, /init or IPC.
     for entry in ("/usr", "/lib", "/lib64", "/bin", "/sbin"):
         if os.path.islink(entry):

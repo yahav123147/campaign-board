@@ -25,6 +25,7 @@
 - Claude Code מותקן **בתוך Ubuntu** ומחובר בחשבון עם מנוי MAX. מנוי Pro אינו מספיק לריצת הסוכנים של הבורד.
 - ב-Windows: Ubuntu 24.04 ב-WSL2. WSL1, Git Bash, PowerShell ו-CMD אינם תחליף. הפרויקט חייב לשבת בתוך מערכת הקבצים של Linux (למשל `~/projects`), לא תחת `/mnt/c`.
 - שכפול הריפו ב-Windows Git ולאחריו העתקה ל-WSL2 עובדים: קבצי הטקסט נשמרים עם סופי שורות של Linux.
+- בלינוקס ובתוך WSL2 נדרשת חבילת `webp` (הכלי `cwebp`) להמרת תמונות ולניקוי מטא-דאטה בשלב 5.2, במקום `sips` שמגיע מובנה ב-macOS. `setup.sh` מתקין אותה יחד עם bubblewrap; אם bubblewrap כבר קיים במערכת, התקינו ידנית: `sudo apt-get install -y webp`.
 
 ## Ubuntu 24.04 רגיל
 

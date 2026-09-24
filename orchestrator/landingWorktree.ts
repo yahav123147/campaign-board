@@ -354,9 +354,27 @@ export async function mirrorWorkspaceRuntimeFiles(
       const linkIgnored = await runLandingGit(worktreePath, ["check-ignore", "-q", "node_modules"], signal);
       if (linkIgnored.code !== 0) {
         await fs.unlink(worktreeNodeModules).catch(() => {});
+        // Exit 1 is git's answer "not ignored"; anything else means git could
+        // not answer at all (not a repository, a locked index, an unreadable
+        // config), and sending the operator to fix a trailing slash that is
+        // not there would waste the diagnosis.
+        if (linkIgnored.code !== 1) {
+          throw new Error(
+            `git check-ignore failed in the run worktree (exit ${linkIgnored.code}): `
+            + `${linkIgnored.stderr.trim() || "no error output"}. Whether node_modules is ignored there is unknown.`,
+          );
+        }
+        // Quote the pattern that is actually present, instead of asserting
+        // which mistake it is.
+        const patterns = (await fs.readFile(path.join(worktreePath, ".gitignore"), "utf8").catch(() => ""))
+          .split("\n").map((line) => line.trim())
+          .filter((line) => line && !line.startsWith("#") && line.includes("node_modules"));
         throw new Error(
-          "The landing workspace's .gitignore ignores node_modules only as a directory (a trailing slash). "
-          + "The run worktree links node_modules, so the pattern must be `node_modules` without the slash.",
+          "The run worktree's .gitignore does not ignore the node_modules symlink this run creates. "
+          + (patterns.length
+            ? `It currently has ${patterns.map((pattern) => `\`${pattern}\``).join(", ")}; a directory-only pattern (a trailing slash) does not match a symlink.`
+            : "It has no node_modules pattern at all.")
+          + " The pattern must be `node_modules`, without a trailing slash.",
         );
       }
       mirrored.push("node_modules");

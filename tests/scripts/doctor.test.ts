@@ -152,6 +152,24 @@ describe("doctor pure checks", () => {
     expect(off.status).toBe("warn");
   });
 
+  it("names the closed release switch as the blocking reason, whatever the Linux probe says", () => {
+    // config/platform-acceptance.json lost, edited or left out of the archive:
+    // the reader fails closed, the three gates refuse every landing run, and
+    // the doctor used to print PASS and Ready: YES right before that happened.
+    const probe = async () => ({ ok: true, detail: "allowed write ok, /etc hidden" });
+    return Promise.all([
+      stage5SandboxCheck({ stage5: { enabled: true } }, "linux", { probe, accepted: () => false }),
+      stage5SandboxCheck({ stage5: { enabled: false } }, "linux", { probe, accepted: () => false }),
+      stage5SandboxCheck({ stage5: { enabled: true } }, "linux", { probe, accepted: () => true }),
+    ]).then(([blocked, disabled, open]) => {
+      expect(blocked.status).toBe("fail");
+      expect(blocked.summary).toContain("acceptance");
+      expect(blocked.action).toContain("config/platform-acceptance.json");
+      expect(disabled.status).toBe("warn");
+      expect(open.status).toBe("pass");
+    });
+  });
+
   it("probeLinuxSandbox reports pass and removes the launch's cleanupPath when the script exits 0", async () => {
     const cleanupPath = await fs.mkdtemp(path.join(os.tmpdir(), "council-doctor-test-cleanup-"));
     const launch = async () => ({
@@ -226,6 +244,31 @@ describe("doctor pure checks", () => {
     const enabled = await secretStoreCheck({}, { stage8: { enabled: true } }, "darwin", false, failingLoad);
     expect(enabled.status).toBe("fail");
   });
+
+  it("loads the secret-store module from the checkout the doctor was pointed at", async () => {
+    // A doctor run given another checkout's root used to validate this one's
+    // module instead, so the report described a tree nobody asked about.
+    const roots: string[] = [];
+    const load = async (root: string) => {
+      roots.push(root);
+      throw new Error("stop after the load");
+    };
+    await secretStoreCheck({}, {}, "darwin", false, load, "/elsewhere/checkout");
+    expect(roots).toEqual(["/elsewhere/checkout"]);
+  });
+
+  it("reports an invalid secret service name as one failed check, not an aborted doctor run", async () => {
+    // A name copy-pasted from a password manager keeps its newline. On WSL2
+    // building the PowerShell script throws on a control character, and
+    // secretStoreCheck is awaited inside Promise.all: the whole report was
+    // lost instead of one FAIL line.
+    const profile = { meta: { tokenKeychainService: "council\nmeta" } };
+    const result = await secretStoreCheck(profile, { stage8: { enabled: true } }, "linux", true);
+    expect(result.status).toBe("fail");
+    expect(result.summary).toContain("meta.tokenKeychainService");
+    // The rejected name itself is never echoed back.
+    expect(`${result.summary} ${result.action}`).not.toContain("council");
+  }, 30_000);
 
   it("requires owner-only Unix permissions and matching ownership", () => {
     expect(assessPrivateDirectory({ platform: "darwin", mode: 0o40700, uid: 501, expectedUid: 501 })).toEqual({

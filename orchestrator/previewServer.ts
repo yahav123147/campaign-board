@@ -2,11 +2,12 @@ import path from "node:path";
 import { resolveNextCli } from "./runStage5LpBuild";
 import os from "node:os";
 import fs from "node:fs/promises";
-import { constants as fsConstants } from "node:fs";
+import { accessSync, constants as fsConstants } from "node:fs";
 import net from "node:net";
 import { spawn, type ChildProcess } from "node:child_process";
 import { prepareLinuxSandboxFiles, sandboxedNodeLaunch } from "./processSandbox";
 import { isWsl } from "./secretStore";
+import { windowsBrowserLaunch } from "./windowsBrowser";
 import {
   signalTrackedChildProcess,
   supervisedProcessTreeLaunch,
@@ -396,27 +397,60 @@ export async function waitForPage(url: string, signal?: AbortSignal): Promise<nu
   return last;
 }
 
+/**
+ * Is this launcher actually there? spawn() resolves the name asynchronously,
+ * so a missing binary surfaces as an "error" event long after the call
+ * returned, and the caller has already told the reviewer a browser opened.
+ * Looking the name up on PATH first keeps openInBrowser's answer honest while
+ * it stays synchronous.
+ */
+function resolvesOnPath(command: string): boolean {
+  const candidates = command.includes(path.sep)
+    ? [command]
+    : (process.env.PATH ?? "").split(path.delimiter).filter(Boolean).map((dir) => path.join(dir, command));
+  for (const candidate of candidates) {
+    try {
+      accessSync(candidate, fsConstants.X_OK);
+      return true;
+    } catch {
+      // try the next PATH entry
+    }
+  }
+  return false;
+}
+
 /** Put the page in front of the reviewer. False means: print the link instead. */
 export function openInBrowser(
   url: string,
-  deps: { platform?: NodeJS.Platform; wsl?: boolean; spawn?: typeof spawn } = {},
+  deps: { platform?: NodeJS.Platform; wsl?: boolean; spawn?: typeof spawn; resolve?: (command: string) => boolean } = {},
 ): boolean {
   const platform = deps.platform ?? process.platform;
   const launch = deps.spawn ?? spawn;
+  const resolve = deps.resolve ?? resolvesOnPath;
   let command: string;
   let args: string[];
   if (platform === "darwin") {
     command = "open";
     args = [url];
   } else if (platform === "linux" && (deps.wsl ?? isWsl())) {
-    command = "powershell.exe";
-    args = ["-NoProfile", "-NonInteractive", "-Command", "Start-Process", url];
+    // A Linux file:// path means nothing to a Windows browser (it would need
+    // the \\wsl$\<distro>\... UNC form), so report failure and let the caller
+    // print the path instead of claiming a browser opened. Stage 5.2 and 7.5
+    // hand this function exactly such URLs for the asset contact sheet.
+    if (url.startsWith("file:")) return false;
+    // windowsBrowserLaunch refuses anything but a clean web URL and hands the
+    // URL to PowerShell as an encoded single-quoted literal, never as script.
+    const launchSpec = windowsBrowserLaunch(url);
+    if (!launchSpec) return false;
+    command = launchSpec.command;
+    args = launchSpec.args;
   } else if (platform === "linux") {
     command = "xdg-open";
     args = [url];
   } else {
     return false;
   }
+  if (!resolve(command)) return false;
   try {
     const child = launch(command, args, { stdio: "ignore", detached: true });
     // A missing launcher (powershell.exe off PATH in a WSL2 shell, no

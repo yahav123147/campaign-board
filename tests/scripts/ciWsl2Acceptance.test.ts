@@ -1,13 +1,17 @@
 import { describe, expect, it } from "vitest";
 import {
   assessEvidence,
+  browserProcessesSeen,
   criticBlockers,
   designReviewExcerpt,
+  designReviewOutcome,
   errorActions,
   failedSubTasks,
+  feedbackLockFailure,
   forgetsApproval,
   isStalled,
   latestStages,
+  MAX_FEEDBACK_LOCK_RETRIES,
   MAX_FEEDBACK_ROUNDS,
   parseSseFrames,
   qaFeedbackFromOutput,
@@ -74,6 +78,17 @@ describe("reviewerActions", () => {
     const actions = reviewerActions(stages, seen, new Map([["3:3", MAX_FEEDBACK_ROUNDS]]), 600, 500);
     expect(actions[0]).toMatchObject({ stage: 3, subTaskId: "3", action: "stop" });
     expect((actions[0] as { reason?: string }).reason).toContain("requiredMockups ריק");
+  });
+  it("after the budget, a blocked design review becomes a recorded reviewer approval, never a silent one", () => {
+    // Runs 35977713894 and 35995878939 stopped here; the board hands a
+    // blocked review to the human, and the reviewer's choice to see the page
+    // is recorded with the blockers instead of ending the run.
+    const review = { schemaVersion: 1, passed: false, failing: ["רוני אבישר"], silent: [], checkedAt: "t" };
+    const stages = [stage(5, "awaiting-decision", [{ id: "5.3", status: "awaiting-decision", designReview: review, output: "" } as never])];
+    const seen = new Map<string, number>([["5:5.3", 0]]);
+    const actions = reviewerActions(stages, seen, new Map([["5:5.3", MAX_FEEDBACK_ROUNDS]]), 600, 500);
+    expect(actions[0]).toMatchObject({ stage: 5, subTaskId: "5.3", action: "approve-with-blockers" });
+    expect((actions[0] as { blockers?: string }).blockers).toContain("רוני אבישר");
   });
   it("names 5.2 and 5.4 as human gates, never a running or approved task", () => {
     const stages = [stage(5, "running", [{ id: "5.2", status: "awaiting-decision" }, { id: "5.3", status: "approved" }, { id: "5.4", status: "awaiting-decision" }])];
@@ -214,6 +229,17 @@ describe("sandboxProfileNetwork", () => {
   });
 });
 
+describe("designReviewOutcome", () => {
+  it("reports passed, blocked, the recorded decision, or unknown", () => {
+    const review = (passed: boolean) => ({ schemaVersion: 1, passed, failing: passed ? [] : ["א"], silent: [], checkedAt: "t" });
+    const with53 = (r: unknown) => [stage(5, "approved", [{ id: "5.3", status: "approved", designReview: r } as never])];
+    expect(designReviewOutcome(with53(review(true)), undefined).status).toBe("passed");
+    expect(designReviewOutcome(with53(review(false)), undefined)).toMatchObject({ status: "blocked", detail: "blocked by א" });
+    expect(designReviewOutcome(with53(review(false)), { key: "5:5.3", blockers: "x", rounds: 2 })).toMatchObject({ status: "approved-with-blockers" });
+    expect(designReviewOutcome([], undefined).status).toBe("unknown");
+  });
+});
+
 describe("assessEvidence", () => {
   const proven = {
     factsJsonExists: true,
@@ -235,10 +261,55 @@ describe("assessEvidence", () => {
     expect(assessEvidence({ ...proven, previewHttpStatus: 502 }).ok).toBe(false);
     expect(assessEvidence({ ...proven, landingCommitSha: undefined }).ok).toBe(false);
   });
+  it("counts the Windows browser as evidence, so the item is not just an echo of the board's own line", () => {
+    // The board printed "opened in the browser" for a launcher that was not
+    // on PATH (run 35749912557), so the stage line alone proves nothing.
+    // The tasklist capture is written after the driver exits, so an absent
+    // file stays neutral here and the workflow step enforces it instead.
+    const item = (facts: Record<string, unknown>) =>
+      assessEvidence(facts).items.find((candidate) => candidate.id === "preview-opened-in-windows");
+    expect(item(proven)?.ok).toBe(true);
+    expect(item({ ...proven, windowsBrowserProcesses: 2 })?.ok).toBe(true);
+    expect(item({ ...proven, windowsBrowserProcesses: 0 })?.ok).toBe(false);
+    expect(item({ ...proven, previewOpenedLine: false })?.ok).toBe(false);
+    expect(item({ ...proven, windowsBrowserProcesses: 0 })?.detail).toContain("0");
+  });
+
+  it("reports the design review beside the platform items without letting it decide the verdict", () => {
+    const withReview = { ...proven, designReview: { status: "approved-with-blockers", detail: "after 2 feedback rounds: x" } };
+    const result = assessEvidence(withReview);
+    expect(result.ok).toBe(true);
+    const line = result.items.find((item) => item.id === "design-review");
+    expect(line).toMatchObject({ ok: false, informational: true });
+    expect(line?.detail).toContain("approved-with-blockers");
+  });
   it("names the failing item so the report reads without the log", () => {
     const { items } = assessEvidence({ ...proven, buildProfileNetwork: undefined });
     const item = items.find((candidate) => candidate.id === "build-network-none");
     expect(item?.ok).toBe(false);
     expect(item?.detail).toContain("(not logged)");
+  });
+});
+
+describe("browserProcessesSeen", () => {
+  it("counts the msedge.exe lines a tasklist capture holds", () => {
+    expect(browserProcessesSeen("msedge.exe 1234 Console 1 50,000 K\nmsedge.exe 1240 Console 1 9,000 K\n")).toBe(2);
+    // What tasklist.exe prints when nothing matched.
+    expect(browserProcessesSeen("INFO: No tasks are running which match the specified criteria.\n")).toBe(0);
+    expect(browserProcessesSeen("")).toBe(0);
+  });
+});
+
+describe("feedbackLockFailure", () => {
+  it("bounds the 409 retries on an errored sub-task instead of leaning on the stall clock", () => {
+    // An execution lock held by a dead attempt answers 409 for ever. Nothing
+    // changes, so lastChangeAt never moves and the run burned the full
+    // 130-minute stall limit on a runner billed at 2x before reporting.
+    expect(feedbackLockFailure("5:5.3", 1)).toBeUndefined();
+    expect(feedbackLockFailure("5:5.3", MAX_FEEDBACK_LOCK_RETRIES - 1)).toBeUndefined();
+    const reason = feedbackLockFailure("5:5.3", MAX_FEEDBACK_LOCK_RETRIES);
+    expect(reason).toContain("5:5.3");
+    expect(reason).toContain("409");
+    expect(MAX_FEEDBACK_LOCK_RETRIES).toBe(6);
   });
 });

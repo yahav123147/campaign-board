@@ -49,8 +49,11 @@ describe("secretCommand", () => {
     expect(win.args.join(" ")).not.toContain("$env:");
 
     expect(secretCommand("macos-keychain", "s")).toMatchObject({ command: "/usr/bin/security", args: ["find-generic-password", "-s", "s", "-w"] });
-    expect(secretCommand("linux-secret-tool", "s")).toMatchObject({ command: "secret-tool", args: ["lookup", "service", "s"] });
-    expect(win.command).toBe("powershell.exe");
+    // Absolute, like the macOS backend: a stale ~/.local/bin shim or a
+    // compromised dev tool earlier on PATH could otherwise answer the lookup
+    // and hand stage 8 a substituted token.
+    expect(secretCommand("linux-secret-tool", "s")).toMatchObject({ command: "/usr/bin/secret-tool", args: ["lookup", "service", "s"] });
+    expect(win.command).toBe("/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe");
     expect(win.args).toContain("-NonInteractive");
     expect(win.args.join(" ")).toContain("CredRead");
   });
@@ -78,14 +81,18 @@ describe("secretCommand", () => {
     // regardless, so the probe reuses "lookup" (exits 1 when missing) and the
     // caller must discard its stdout at the spawn level, not merely ignore it.
     const linuxProbe = secretExistsCommand("linux-secret-tool", "s");
+    expect(linuxProbe.command).toBe("/usr/bin/secret-tool");
+    expect(secretExistsCommand("windows-credential-manager", "s").command).toBe("/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe");
     expect(linuxProbe.args[0]).toBe("lookup");
     expect(linuxProbe.args).toEqual(["lookup", "service", "s"]);
     expect(linuxProbe.discardStdout).toBe(true);
     const winProbe = secretExistsCommand("windows-credential-manager", "s");
     const winProbeScript = winProbe.args[winProbe.args.length - 1];
     expect(winProbeScript).toContain("'s'");
-    expect(winProbeScript).toContain("$true");
-    expect(winProbeScript).not.toContain("$false");
+    // The mode reaching Read, not merely the word: the script also passes
+    // $false to the UTF8Encoding constructor (no BOM).
+    expect(winProbeScript).toContain("::Read('s', $true)");
+    expect(winProbeScript).not.toContain("::Read('s', $false)");
     // The struct declaration textually names CredentialBlob(Size) either way
     // (it's C# source, compiled once for both modes) — the real guarantee is
     // that existsOnly short-circuits to "present" before the blob is ever
@@ -178,6 +185,15 @@ describe("credReadScript", () => {
     // at column 0, or PowerShell never terminates it.
     expect(script).toMatch(/@'\s*\n/);
     expect(script).toMatch(/\n'@\s*\n/);
+  });
+  it("sets UTF-8 output before writing, so a non-ASCII secret survives the pipe", () => {
+    // Redirected Windows PowerShell 5.1 writes through the OEM/ANSI code
+    // page, while readSecret decodes utf-8: a token with any non-ASCII
+    // character came back as mojibake, non-empty, and failed open into an
+    // opaque Graph auth error instead of a secret-store error.
+    const script = credReadScript("council-meta", false);
+    expect(script).toContain("[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)");
+    expect(script.indexOf("[Console]::OutputEncoding")).toBeLessThan(script.indexOf("[Console]::Out.Write"));
   });
 });
 

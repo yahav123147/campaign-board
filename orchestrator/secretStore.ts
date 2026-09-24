@@ -73,8 +73,15 @@ export function psSingleQuoted(value: string): string {
 // the caller's timeout or threw immediately, never printing the value it
 // mis-sized. Letting the marshaler own the layout is correct on either
 // bitness and needs no memorized offsets to review.
+//
+// [Console]::OutputEncoding is set first because a redirected Windows
+// PowerShell 5.1 writes through the OEM/ANSI code page while readSecret
+// decodes utf-8. A token holding any non-ASCII character came back as
+// mojibake, and a non-empty mojibake string fails open into stage 8 as an
+// opaque Graph auth error rather than a secret-store error.
 export function credReadScript(service: string, existsOnly: boolean): string {
   return `
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 $src = @'
 using System;
 using System.Runtime.InteropServices;
@@ -129,15 +136,24 @@ function minimalEnv(extra: Record<string, string | undefined> = {}): Record<stri
   };
 }
 
+// Absolute, like the macOS backend's /usr/bin/security. Resolving these
+// through the inherited PATH let anything earlier on it (a stale
+// ~/.local/bin shim, a compromised dev tool) receive the service name and
+// answer with a string of its own, which readSecret would then accept as the
+// Meta token. A missing binary becomes ENOENT, which readSecret already turns
+// into the backend's install hint.
+export const SECRET_TOOL_PATH = "/usr/bin/secret-tool";
+export const WSL_POWERSHELL_PATH = "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe";
+
 export function secretCommand(backend: SecretBackend, service: string) {
   switch (backend) {
     case "macos-keychain":
       return { command: "/usr/bin/security", args: ["find-generic-password", "-s", service, "-w"], env: minimalEnv() };
     case "linux-secret-tool":
-      return { command: "secret-tool", args: ["lookup", "service", service], env: minimalEnv() };
+      return { command: SECRET_TOOL_PATH, args: ["lookup", "service", service], env: minimalEnv() };
     case "windows-credential-manager":
       return {
-        command: "powershell.exe",
+        command: WSL_POWERSHELL_PATH,
         args: ["-NoProfile", "-NonInteractive", "-Command", credReadScript(service, false)],
         env: minimalEnv(),
       };
@@ -161,10 +177,10 @@ export function secretExistsCommand(backend: SecretBackend, service: string) {
     case "macos-keychain":
       return { command: "/usr/bin/security", args: ["find-generic-password", "-s", service], env: minimalEnv(), discardStdout: false };
     case "linux-secret-tool":
-      return { command: "secret-tool", args: ["lookup", "service", service], env: minimalEnv(), discardStdout: true };
+      return { command: SECRET_TOOL_PATH, args: ["lookup", "service", service], env: minimalEnv(), discardStdout: true };
     case "windows-credential-manager":
       return {
-        command: "powershell.exe",
+        command: WSL_POWERSHELL_PATH,
         args: ["-NoProfile", "-NonInteractive", "-Command", credReadScript(service, true)],
         env: minimalEnv(),
         discardStdout: false,

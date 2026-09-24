@@ -18,6 +18,7 @@ import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { mockupBrowserExecutablePath } from "./browser-executable.mjs";
+import { linuxLandingAccepted, PLATFORM_ACCEPTANCE_FILE } from "../lib/platformAcceptance.mjs";
 
 const execFileAsync = promisify(execFile);
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
@@ -1571,11 +1572,24 @@ export async function pageTypesCheck(profile, effectiveEnv, root = DEFAULT_ROOT)
  *
  * @param {any} readiness
  * @param {string=} platform
- * @param {{ probe?: () => Promise<{ ok: boolean; detail: string }> }=} deps injectable for tests; defaults to the real probe
+ * @param {{ probe?: () => Promise<{ ok: boolean; detail: string }>, accepted?: () => boolean }=} deps injectable for tests; defaults to the real probe and release switch
  */
 export async function stage5SandboxCheck(readiness, platform = process.platform, deps = {}) {
   const enabled = readiness?.stage5?.enabled === true;
   if (platform === "linux") {
+    // The same switch the three runtime gates read. A working sandbox is not
+    // enough: with the switch closed every landing run stops on
+    // "awaiting acceptance", and the doctor exists to say so beforehand.
+    const accepted = (deps.accepted ?? linuxLandingAccepted)();
+    if (!accepted) {
+      return doctorCheck({
+        id: "stage5-native-sandbox",
+        title: "Stage 5 sandbox (bubblewrap)",
+        status: enabled ? "fail" : "warn",
+        summary: "Linux/WSL landing execution is awaiting acceptance, so Stage 5 would stop before the sandbox is reached.",
+        action: `Restore ${PLATFORM_ACCEPTANCE_FILE} from the released package (it must contain "linuxLanding": true), or run Stage 5 on macOS.`,
+      });
+    }
     const probe = deps.probe ?? (() => probeLinuxSandbox(DEFAULT_ROOT));
     const result = await probe();
     return doctorCheck({
@@ -1649,13 +1663,14 @@ export async function stage5SandboxCheck(readiness, platform = process.platform,
  * @param {string=} platform
  * @param {boolean=} wsl
  * @param {typeof importTypeScriptModule=} load injectable for tests; defaults to the real loader
+ * @param {string=} root the checkout to load the module from, as runDoctor was pointed at
  */
-export async function secretStoreCheck(profile, readiness, platform = process.platform, wsl = undefined, load = importTypeScriptModule) {
+export async function secretStoreCheck(profile, readiness, platform = process.platform, wsl = undefined, load = importTypeScriptModule, root = DEFAULT_ROOT) {
   const enabled = readiness?.stage8?.enabled === true || readiness?.stage9?.enabled === true;
   const title = "Meta token in the host secret store";
   let secretStoreModule;
   try {
-    secretStoreModule = await load(DEFAULT_ROOT, "orchestrator/secretStore");
+    secretStoreModule = await load(root, "orchestrator/secretStore");
   } catch {
     return doctorCheck({ id: "meta-keychain", title, status: enabled ? "fail" : "warn",
       summary: "The secret store module could not be loaded.",
@@ -1674,8 +1689,20 @@ export async function secretStoreCheck(profile, readiness, platform = process.pl
       summary: "No secret service name is configured; Stage 8 remains disabled.",
       action: `When enabling Stage 8, store the approved token (${backend}) and set meta.tokenKeychainService in the private client profile.` });
   }
-  const probe = secretExistsCommand(backend, service);
-  const response = await runCommand(probe.command, probe.args, { env: probe.env, discardStdout: probe.discardStdout === true });
+  // Building the probe can reject the configured name outright: on WSL2 the
+  // PowerShell script refuses a control character (a name copy-pasted from a
+  // password manager keeps its newline). This check is awaited inside
+  // Promise.all, so an escaping throw would cost the operator the whole
+  // report instead of one FAIL line. The name itself is never echoed.
+  let response;
+  try {
+    const probe = secretExistsCommand(backend, service);
+    response = await runCommand(probe.command, probe.args, { env: probe.env, discardStdout: probe.discardStdout === true });
+  } catch (error) {
+    return doctorCheck({ id: "meta-keychain", title, status: enabled ? "fail" : "warn",
+      summary: `The configured meta.tokenKeychainService could not be used with ${backend}: ${error instanceof Error ? error.message : String(error)}`,
+      action: "Set meta.tokenKeychainService in the private client profile to the plain service name, with no line breaks or other control characters." });
+  }
   if (!response.ok) {
     return doctorCheck({ id: "meta-keychain", title, status: enabled ? "fail" : "warn",
       summary: `The configured item was not found in ${backend}. No secret value was requested or printed.`,
@@ -1926,7 +1953,7 @@ export async function runDoctor(options = {}) {
       profileResult.readiness,
     ),
     stage5SandboxCheck(profileResult.readiness),
-    secretStoreCheck(profileResult.profile, profileResult.readiness),
+    secretStoreCheck(profileResult.profile, profileResult.readiness, undefined, undefined, undefined, root),
     pageTypesCheck(profileResult.profile, effectiveEnv, root),
     mockupBrowserCheck(profileResult.readiness, effectiveEnv),
   ]);

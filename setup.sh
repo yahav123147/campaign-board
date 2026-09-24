@@ -26,12 +26,18 @@ if [[ "$(uname)" == "Linux" ]]; then
     echo "העתיקו: cp -r \"$PWD\" ~/campaign-board && cd ~/campaign-board && ./setup.sh"
     exit 1
   fi
-  if ! command -v bwrap >/dev/null; then
+  # bubblewrap is the sandbox for page builds; webp brings cwebp, the image
+  # converter macOS ships as sips. Each is installed only when missing, so a
+  # host that already has one still gets the other.
+  LINUX_MISSING=()
+  command -v bwrap >/dev/null || LINUX_MISSING+=(bubblewrap)
+  command -v cwebp >/dev/null || LINUX_MISSING+=(webp)
+  if (( ${#LINUX_MISSING[@]} )); then
     if command -v sudo >/dev/null && command -v apt-get >/dev/null; then
-      echo "-- מתקין bubblewrap (ארגז החול לבניית דפים)..."
-      sudo apt-get install -y bubblewrap
+      echo "-- מתקין ${LINUX_MISSING[*]} (ארגז החול לבניית דפים, המרת תמונות)..."
+      sudo apt-get install -y "${LINUX_MISSING[@]}"
     else
-      echo "חסר bubblewrap. התקינו: sudo apt-get install -y bubblewrap ואז הריצו שוב."
+      echo "חסר: ${LINUX_MISSING[*]}. התקינו: sudo apt-get install -y ${LINUX_MISSING[*]} ואז הריצו שוב."
       exit 1
     fi
   fi

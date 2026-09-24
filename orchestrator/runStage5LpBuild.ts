@@ -486,7 +486,17 @@ async function runLandingBuild(
       proc.stdout!.on("data", capture);
       proc.stderr!.on("data", capture);
       // A failed spawn also emits close; release host launch state only then.
-      proc.on("error", (error) => { terminationError ??= error; });
+      proc.on("error", (error) => {
+        terminationError ??= error;
+        // Node normally still emits "close" after an "error" (onErrorNT ->
+        // maybeClose), and the finally block needs that to release the host
+        // launch state. But setting terminationError makes terminate() a
+        // no-op, so the 10-minute timeout has stopped being a backstop: if
+        // "close" never arrives the stage hangs until the agent budget runs
+        // out. This unref'd second settles the promise in that case and is
+        // harmless when "close" wins, because finish() is idempotent.
+        setTimeout(() => finish(terminationError), 1_000).unref();
+      });
       proc.on("close", (code) => {
         closed = true;
         if (forceKill) clearTimeout(forceKill);
