@@ -543,7 +543,7 @@ ${effectiveMode === "ai-variation" ? 'דוגמה למצב variation (שני הש
     setSubTask({ assetContactSheetFile: sheetFile, assetContactSheetSha256 });
 
     const sheetUrl = `file://${sheetPath}`;
-    const opened = openInBrowser(sheetUrl);
+    const opened = await openInBrowser(sheetUrl);
     const rejected = manifest.assets.filter((asset) => asset.status === "rejected");
 
     const output = [

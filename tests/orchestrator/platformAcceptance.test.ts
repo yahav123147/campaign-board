@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { linuxLandingAccepted, PLATFORM_ACCEPTANCE_FILE } from "@/orchestrator/platformAcceptance";
 import { linuxLandingAccepted as fromMjs } from "@/lib/platformAcceptance.mjs";
 
@@ -19,5 +19,14 @@ describe("platform acceptance switch", () => {
     expect(raw).toEqual({ linuxLanding: true });
     expect(fromMjs()).toBe(linuxLandingAccepted());
     expect(PLATFORM_ACCEPTANCE_FILE).toBe("config/platform-acceptance.json");
+  });
+  afterEach(() => vi.restoreAllMocks());
+  it("reads the file once per process: it is a release artefact on every sandboxed launch, not a runtime toggle", () => {
+    linuxLandingAccepted();
+    fromMjs();
+    const read = vi.spyOn(fs, "readFileSync");
+    expect(linuxLandingAccepted()).toBe(true);
+    expect(fromMjs()).toBe(true);
+    expect(read).not.toHaveBeenCalled();
   });
 });

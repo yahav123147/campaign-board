@@ -491,7 +491,7 @@ export async function runStage5Preview(
     token(`🌿 ענף ב-landing-pages: ${branch}\n`);
     token(`✅ הדף עלה: ${url}\n`);
 
-    const opened = openInBrowser(url);
+    const opened = await openInBrowser(url);
     if (opened) token("🌐 פתחתי לך אותו בדפדפן.\n");
 
     token(`\n🔍 מריץ את שער ה-QA על ${QA_WIDTHS.join(", ")} פיקסל...\n\n`);

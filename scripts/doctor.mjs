@@ -18,7 +18,6 @@ import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { mockupBrowserExecutablePath } from "./browser-executable.mjs";
-import { linuxLandingAccepted, PLATFORM_ACCEPTANCE_FILE } from "../lib/platformAcceptance.mjs";
 
 const execFileAsync = promisify(execFile);
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
@@ -1572,7 +1571,7 @@ export async function pageTypesCheck(profile, effectiveEnv, root = DEFAULT_ROOT)
  *
  * @param {any} readiness
  * @param {string=} platform
- * @param {{ probe?: () => Promise<{ ok: boolean; detail: string }>, accepted?: () => boolean }=} deps injectable for tests; defaults to the real probe and release switch
+ * @param {{ probe?: () => Promise<{ ok: boolean; detail: string }>, accepted?: () => boolean, loadSwitch?: () => Promise<{ linuxLandingAccepted: () => boolean }> }=} deps injectable for tests; defaults to the real probe and release switch
  */
 export async function stage5SandboxCheck(readiness, platform = process.platform, deps = {}) {
   const enabled = readiness?.stage5?.enabled === true;
@@ -1580,14 +1579,33 @@ export async function stage5SandboxCheck(readiness, platform = process.platform,
     // The same switch the three runtime gates read. A working sandbox is not
     // enough: with the switch closed every landing run stops on
     // "awaiting acceptance", and the doctor exists to say so beforehand.
-    const accepted = (deps.accepted ?? linuxLandingAccepted)();
+    // The switch module is loaded here, guarded, like the secret-store module:
+    // a partial unpack must cost one FAIL line, not the whole report.
+    let accepted;
+    if (deps.accepted) {
+      accepted = deps.accepted();
+    } else {
+      let acceptance;
+      try {
+        acceptance = await (deps.loadSwitch ?? (() => import("../lib/platformAcceptance.mjs")))();
+      } catch {
+        return doctorCheck({
+          id: "stage5-native-sandbox",
+          title: "Stage 5 sandbox (bubblewrap)",
+          status: enabled ? "fail" : "warn",
+          summary: "The release switch module lib/platformAcceptance.mjs could not be loaded, so Linux/WSL landing execution counts as not accepted.",
+          action: "Restore lib/platformAcceptance.mjs and config/platform-acceptance.json from the released package, then rerun the doctor.",
+        });
+      }
+      accepted = acceptance.linuxLandingAccepted();
+    }
     if (!accepted) {
       return doctorCheck({
         id: "stage5-native-sandbox",
         title: "Stage 5 sandbox (bubblewrap)",
         status: enabled ? "fail" : "warn",
         summary: "Linux/WSL landing execution is awaiting acceptance, so Stage 5 would stop before the sandbox is reached.",
-        action: `Restore ${PLATFORM_ACCEPTANCE_FILE} from the released package (it must contain "linuxLanding": true), or run Stage 5 on macOS.`,
+        action: 'Restore config/platform-acceptance.json from the released package (it must contain "linuxLanding": true), or run Stage 5 on macOS.',
       });
     }
     const probe = deps.probe ?? (() => probeLinuxSandbox(DEFAULT_ROOT));
@@ -1689,6 +1707,11 @@ export async function secretStoreCheck(profile, readiness, platform = process.pl
       summary: "No secret service name is configured; Stage 8 remains disabled.",
       action: `When enabling Stage 8, store the approved token (${backend}) and set meta.tokenKeychainService in the private client profile.` });
   }
+  // No Windows PowerShell reachable from this distro (interop off, or a
+  // non-default automount root with no PATH entry) would otherwise read as
+  // "item not found" and send the operator to re-store a credential that is
+  // already there.
+  const { resolveWindowsPowerShell, WINDOWS_INTEROP_MISSING } = secretStoreModule;
   // Building the probe can reject the configured name outright: on WSL2 the
   // PowerShell script refuses a control character (a name copy-pasted from a
   // password manager keeps its newline). This check is awaited inside
@@ -1697,6 +1720,11 @@ export async function secretStoreCheck(profile, readiness, platform = process.pl
   let response;
   try {
     const probe = secretExistsCommand(backend, service);
+    if (backend === "windows-credential-manager" && typeof resolveWindowsPowerShell === "function" && !resolveWindowsPowerShell()) {
+      return doctorCheck({ id: "meta-keychain", title, status: enabled ? "fail" : "warn",
+        summary: "Windows PowerShell is not reachable from this WSL2 distro, so the Credential Manager cannot be read; the configured item may well exist.",
+        action: WINDOWS_INTEROP_MISSING });
+    }
     response = await runCommand(probe.command, probe.args, { env: probe.env, discardStdout: probe.discardStdout === true });
   } catch (error) {
     return doctorCheck({ id: "meta-keychain", title, status: enabled ? "fail" : "warn",

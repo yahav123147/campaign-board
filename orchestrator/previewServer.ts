@@ -419,11 +419,22 @@ function resolvesOnPath(command: string): boolean {
   return false;
 }
 
-/** Put the page in front of the reviewer. False means: print the link instead. */
+/** How long a launcher may keep running before it counts as a hand-off to the browser. */
+export const BROWSER_LAUNCH_SETTLE_MS = 2_500;
+
+/**
+ * Put the page in front of the reviewer. False means: print the link instead.
+ * Resolves once the launcher has spoken: exit 0 (open, xdg-open and
+ * Start-Process all return right after handing the URL over) is an open, a
+ * spawn error or a non-zero exit is not, and a launcher still running after
+ * BROWSER_LAUNCH_SETTLE_MS is taken as a hand-off. A synchronous true after
+ * spawn let PowerShell fail parameter binding while the board still said
+ * "opened it for you".
+ */
 export function openInBrowser(
   url: string,
-  deps: { platform?: NodeJS.Platform; wsl?: boolean; spawn?: typeof spawn; resolve?: (command: string) => boolean } = {},
-): boolean {
+  deps: { platform?: NodeJS.Platform; wsl?: boolean; spawn?: typeof spawn; resolve?: (command: string) => boolean; settleMs?: number } = {},
+): Promise<boolean> {
   const platform = deps.platform ?? process.platform;
   const launch = deps.spawn ?? spawn;
   const resolve = deps.resolve ?? resolvesOnPath;
@@ -437,32 +448,45 @@ export function openInBrowser(
     // the \\wsl$\<distro>\... UNC form), so report failure and let the caller
     // print the path instead of claiming a browser opened. Stage 5.2 and 7.5
     // hand this function exactly such URLs for the asset contact sheet.
-    if (url.startsWith("file:")) return false;
+    if (url.startsWith("file:")) return Promise.resolve(false);
     // windowsBrowserLaunch refuses anything but a clean web URL and hands the
     // URL to PowerShell as an encoded single-quoted literal, never as script.
     const launchSpec = windowsBrowserLaunch(url);
-    if (!launchSpec) return false;
+    if (!launchSpec) return Promise.resolve(false);
     command = launchSpec.command;
     args = launchSpec.args;
   } else if (platform === "linux") {
     command = "xdg-open";
     args = [url];
   } else {
-    return false;
+    return Promise.resolve(false);
   }
-  if (!resolve(command)) return false;
-  try {
-    const child = launch(command, args, { stdio: "ignore", detached: true });
+  if (!resolve(command)) return Promise.resolve(false);
+  return new Promise((resolveOpen) => {
+    let child: ChildProcess;
+    try {
+      child = launch(command, args, { stdio: "ignore", detached: true });
+    } catch {
+      resolveOpen(false);
+      return;
+    }
+    let settled = false;
+    const settle = (opened: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolveOpen(opened);
+    };
+    const timer = setTimeout(() => settle(true), deps.settleMs ?? BROWSER_LAUNCH_SETTLE_MS);
+    timer.unref();
     // A missing launcher (powershell.exe off PATH in a WSL2 shell, no
     // xdg-open on a headless box) surfaces as an asynchronous "error" event,
     // not a throw; with no listener it would take the whole board down.
     // Measured inside WSL2: 1394 tests passed and the process still died.
-    child.on("error", () => {});
+    child.on("error", () => settle(false));
+    child.on("exit", (code) => settle(code === 0));
     child.unref();
-    return true;
-  } catch {
-    return false;
-  }
+  });
 }
 
 /**

@@ -1,7 +1,8 @@
 import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  credReadScript, detectSecretBackend, installHint, MAX_SECRET_BYTES, psSingleQuoted, readSecret, secretCommand, secretExistsCommand,
+  credReadScript, detectSecretBackend, installHint, MAX_SECRET_BYTES, psSingleQuoted, readSecret, resolveWindowsPowerShell, secretCommand,
+  secretExistsCommand, WINDOWS_INTEROP_MISSING, WSL_POWERSHELL_PATH,
 } from "@/orchestrator/secretStore";
 
 /** A child that emits what the test scripts, and records what it was asked. */
@@ -154,6 +155,53 @@ describe("readSecret", () => {
     const message = (error as Error).message;
     expect(message).toContain("svc");
     expect(message).toContain(installHint("linux-secret-tool"));
+  });
+  it("names the missing Windows interop path, not the credential, when powershell.exe is absent from WSL2", async () => {
+    // ENOENT here is a path problem (interop off, automount.root changed):
+    // the cmdkey hint would send the operator to re-store an item that exists.
+    const { spawn } = fakeSpawn((c) => { const e = Object.assign(new Error("spawn powershell.exe ENOENT"), { code: "ENOENT" }); c.emit("error", e); });
+    let error: unknown;
+    try {
+      await readSecret("svc", undefined, { platform: "linux", wsl: true, spawn: spawn as never });
+    } catch (caught) {
+      error = caught;
+    }
+    const message = (error as Error).message;
+    expect(message).toContain("svc");
+    expect(message).toContain(WINDOWS_INTEROP_MISSING);
+    expect(message).not.toContain("cmdkey");
+  });
+});
+
+describe("resolveWindowsPowerShell", () => {
+  const suffix = "/Windows/System32/WindowsPowerShell/v1.0/powershell.exe";
+  const probe = (runnable: string[], real: Record<string, string> = {}) => ({
+    runnable: (candidate: string) => runnable.includes(candidate),
+    realpath: (candidate: string) => real[candidate] ?? candidate,
+  });
+  it("prefers the default automount path when it is runnable", () => {
+    expect(resolveWindowsPowerShell({ PATH: "/c/Windows/System32/WindowsPowerShell/v1.0" }, probe([WSL_POWERSHELL_PATH, `/c${suffix}`]))).toBe(WSL_POWERSHELL_PATH);
+  });
+  it("falls back to a PATH entry whose real path is Windows PowerShell (automount.root = /, or a Windows install off C:)", () => {
+    expect(resolveWindowsPowerShell({ PATH: `/usr/bin:/c/Windows/System32/WindowsPowerShell/v1.0` }, probe([`/c${suffix}`]))).toBe(`/c${suffix}`);
+    // Case-insensitive like the drive it lives on.
+    expect(resolveWindowsPowerShell({ PATH: "/d/windows/system32/windowspowershell/v1.0" }, probe(["/d/windows/system32/windowspowershell/v1.0/powershell.exe"])))
+      .toBe("/d/windows/system32/windowspowershell/v1.0/powershell.exe");
+  });
+  it("never accepts a powershell.exe shim that merely sits on PATH", () => {
+    const shim = "/home/u/.local/bin/powershell.exe";
+    expect(resolveWindowsPowerShell({ PATH: "/home/u/.local/bin" }, probe([shim]))).toBeUndefined();
+    // A symlink named like the real thing but pointing elsewhere is a shim too.
+    expect(resolveWindowsPowerShell({ PATH: "/home/u/.local/bin" }, probe([shim], { [shim]: "/usr/bin/pwsh" }))).toBeUndefined();
+    expect(resolveWindowsPowerShell({ PATH: "" }, probe([]))).toBeUndefined();
+  });
+  it("is what the Windows backend commands spawn, with the default as the last resort", () => {
+    // On a host without Windows interop nothing resolves, and the command
+    // falls back to the default path so the failure is an ENOENT the reader
+    // explains, never an arbitrary binary.
+    const expected = resolveWindowsPowerShell() ?? WSL_POWERSHELL_PATH;
+    expect(secretCommand("windows-credential-manager", "s").command).toBe(expected);
+    expect(secretExistsCommand("windows-credential-manager", "s").command).toBe(expected);
   });
 });
 

@@ -1,5 +1,6 @@
 import { spawn as nodeSpawn } from "node:child_process";
 import fs from "node:fs";
+import path from "node:path";
 import { trackChildProcess } from "./childProcessRegistry";
 
 export type SecretBackend = "macos-keychain" | "windows-credential-manager" | "linux-secret-tool";
@@ -144,6 +145,54 @@ function minimalEnv(extra: Record<string, string | undefined> = {}): Record<stri
 // into the backend's install hint.
 export const SECRET_TOOL_PATH = "/usr/bin/secret-tool";
 export const WSL_POWERSHELL_PATH = "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe";
+const WINDOWS_POWERSHELL_SUFFIX = "/windows/system32/windowspowershell/v1.0/powershell.exe";
+
+export interface WindowsPowerShellProbe {
+  readonly runnable: (candidate: string) => boolean;
+  readonly realpath: (candidate: string) => string;
+}
+
+const realProbe: WindowsPowerShellProbe = {
+  runnable: (candidate) => {
+    try {
+      fs.accessSync(candidate, fs.constants.X_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  },
+  realpath: (candidate) => fs.realpathSync(candidate),
+};
+
+/**
+ * Where Windows PowerShell is reachable from this distro, or undefined when
+ * Windows interop is not found. The default automount puts it at
+ * WSL_POWERSHELL_PATH. A distro with `automount.root = /` in /etc/wsl.conf
+ * (drives under /c) or a Windows install off C: is found through PATH
+ * instead, but only a candidate whose real path ends in
+ * System32\WindowsPowerShell\v1.0\powershell.exe counts, so an arbitrary
+ * powershell.exe shim earlier on PATH still cannot receive the service name.
+ */
+export function resolveWindowsPowerShell(env: { readonly PATH?: string | undefined } = { PATH: process.env.PATH }, probe: WindowsPowerShellProbe = realProbe): string | undefined {
+  if (probe.runnable(WSL_POWERSHELL_PATH)) return WSL_POWERSHELL_PATH;
+  for (const dir of (env.PATH ?? "").split(":").filter(Boolean)) {
+    const candidate = path.join(dir, "powershell.exe");
+    if (!probe.runnable(candidate)) continue;
+    let real: string;
+    try {
+      real = probe.realpath(candidate);
+    } catch {
+      continue;
+    }
+    if (real.toLowerCase().endsWith(WINDOWS_POWERSHELL_SUFFIX)) return real;
+  }
+  return undefined;
+}
+
+/** What to tell the operator when no Windows PowerShell is reachable: a path problem, not a missing credential. */
+export const WINDOWS_INTEROP_MISSING =
+  `Windows PowerShell was not found from WSL2: neither ${WSL_POWERSHELL_PATH} nor a powershell.exe on PATH under System32\\WindowsPowerShell\\v1.0. ` +
+  "Check /etc/wsl.conf (interop.enabled, automount.root) and add the PowerShell directory to PATH inside WSL2.";
 
 export function secretCommand(backend: SecretBackend, service: string) {
   switch (backend) {
@@ -153,7 +202,7 @@ export function secretCommand(backend: SecretBackend, service: string) {
       return { command: SECRET_TOOL_PATH, args: ["lookup", "service", service], env: minimalEnv() };
     case "windows-credential-manager":
       return {
-        command: WSL_POWERSHELL_PATH,
+        command: resolveWindowsPowerShell() ?? WSL_POWERSHELL_PATH,
         args: ["-NoProfile", "-NonInteractive", "-Command", credReadScript(service, false)],
         env: minimalEnv(),
       };
@@ -180,7 +229,7 @@ export function secretExistsCommand(backend: SecretBackend, service: string) {
       return { command: SECRET_TOOL_PATH, args: ["lookup", "service", service], env: minimalEnv(), discardStdout: true };
     case "windows-credential-manager":
       return {
-        command: WSL_POWERSHELL_PATH,
+        command: resolveWindowsPowerShell() ?? WSL_POWERSHELL_PATH,
         args: ["-NoProfile", "-NonInteractive", "-Command", credReadScript(service, true)],
         env: minimalEnv(),
         discardStdout: false,
@@ -245,7 +294,13 @@ export async function readSecret(service: string, signal?: AbortSignal, deps: Se
     proc.stderr.resume();
     proc.on("error", (error: NodeJS.ErrnoException) => {
       if (terminationError) return;
-      settle(error.code === "ENOENT" ? new Error(`Secret store command for '${service}' is not installed: ${installHint(backend)}`) : error);
+      // ENOENT on the Windows backend is a missing interop path, not a missing
+      // credential: sending the operator to cmdkey would re-store an item that
+      // is already there.
+      const missing = backend === "windows-credential-manager"
+        ? `Secret store command for '${service}' is not reachable. ${WINDOWS_INTEROP_MISSING}`
+        : `Secret store command for '${service}' is not installed: ${installHint(backend)}`;
+      settle(error.code === "ENOENT" ? new Error(missing) : error);
     });
     proc.on("close", (code) => {
       if (forceKill) clearTimeout(forceKill);

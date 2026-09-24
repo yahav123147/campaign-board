@@ -1134,7 +1134,7 @@ ${feedbackBlock}`;
     control?.throwIfAborted();
     await atomicCreateManagedFile(sheetPath, assetsDir, sheetHtml);
     const sheetUrl = `file://${sheetPath}`;
-    const opened = openInBrowser(sheetUrl);
+    const opened = await openInBrowser(sheetUrl);
 
     emit(`\n📇 ${files.length} נכסים מאומתים. פותח גיליון לאישור...\n`);
     if (rejected.length) {
@@ -1298,7 +1298,7 @@ ${feedbackBlock}`;
           }
           await atomicCreateManagedFile(sheetPath, assetsDir, sheetHtml);
           const sheetUrl = `file://${sheetPath}`;
-          const opened = openInBrowser(sheetUrl);
+          const opened = await openInBrowser(sheetUrl);
           const output = [
             `## 🖼️ ${sheetUrl}`,
             "",

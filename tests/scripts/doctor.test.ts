@@ -170,6 +170,23 @@ describe("doctor pure checks", () => {
     });
   });
 
+  it("fails the sandbox check closed, instead of crashing the doctor, when the release switch module cannot load", async () => {
+    // A partial unpack that drops lib/ used to kill the doctor at import time
+    // (the switch was a top-level import); now it is one FAIL line like the
+    // secret-store module.
+    const probe = async () => ({ ok: true, detail: "allowed write ok, /etc hidden" });
+    const loadSwitch = async () => { throw new Error("ERR_MODULE_NOT_FOUND"); };
+    const enabled = await stage5SandboxCheck({ stage5: { enabled: true } }, "linux", { probe, loadSwitch });
+    expect(enabled.status).toBe("fail");
+    expect(enabled.summary).toContain("lib/platformAcceptance.mjs");
+    expect(enabled.action).toContain("config/platform-acceptance.json");
+    const off = await stage5SandboxCheck({ stage5: { enabled: false } }, "linux", { probe, loadSwitch });
+    expect(off.status).toBe("warn");
+    // The real module still drives the check when it loads.
+    const real = await stage5SandboxCheck({ stage5: { enabled: true } }, "linux", { probe });
+    expect(real.status).toBe("pass");
+  });
+
   it("probeLinuxSandbox reports pass and removes the launch's cleanupPath when the script exits 0", async () => {
     const cleanupPath = await fs.mkdtemp(path.join(os.tmpdir(), "council-doctor-test-cleanup-"));
     const launch = async () => ({
@@ -243,6 +260,25 @@ describe("doctor pure checks", () => {
 
     const enabled = await secretStoreCheck({}, { stage8: { enabled: true } }, "darwin", false, failingLoad);
     expect(enabled.status).toBe("fail");
+  });
+
+  it("reports an unreachable Windows PowerShell as an interop problem, not a missing credential", async () => {
+    // automount.root = / or interop disabled: the probe's ENOENT used to read
+    // as "item not found" with the cmdkey hint, sending the operator to
+    // re-store a credential that is already there.
+    const load = async () => ({
+      detectSecretBackend: () => "windows-credential-manager",
+      secretExistsCommand: () => ({ command: "/nowhere/powershell.exe", args: [], env: {}, discardStdout: false }),
+      installHint: () => "cmdkey hint",
+      resolveWindowsPowerShell: () => undefined,
+      WINDOWS_INTEROP_MISSING: "interop text",
+    });
+    const profile = { meta: { tokenKeychainService: "council-meta" } };
+    const result = await secretStoreCheck(profile, { stage8: { enabled: true } }, "linux", true, load);
+    expect(result.status).toBe("fail");
+    expect(result.summary).toContain("Windows PowerShell is not reachable");
+    expect(result.action).toBe("interop text");
+    expect(`${result.summary} ${result.action}`).not.toContain("cmdkey");
   });
 
   it("loads the secret-store module from the checkout the doctor was pointed at", async () => {

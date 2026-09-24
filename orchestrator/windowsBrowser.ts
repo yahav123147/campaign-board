@@ -1,4 +1,4 @@
-import { psSingleQuoted, WSL_POWERSHELL_PATH } from "./secretStore";
+import { psSingleQuoted, resolveWindowsPowerShell, WSL_POWERSHELL_PATH } from "./secretStore";
 
 /** Only a web URL made of URL characters reaches the Windows browser. */
 const WEB_URL = /^https?:\/\/[A-Za-z0-9._~%:/?#\[\]@!$&()*+,;=-]+$/;
@@ -19,7 +19,7 @@ export function windowsBrowserLaunch(url: string): { command: string; args: stri
   if (!WEB_URL.test(url) || url.includes("'")) return undefined;
   const script = `Start-Process -FilePath ${psSingleQuoted(url)}`;
   return {
-    command: WSL_POWERSHELL_PATH,
+    command: resolveWindowsPowerShell() ?? WSL_POWERSHELL_PATH,
     args: ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")],
   };
 }
